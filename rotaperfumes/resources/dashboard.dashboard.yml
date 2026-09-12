@@ -1,0 +1,21 @@
+# O dashboard comercial como CODIGO.
+#
+# O ponto da noite: dashboard clicado nao tem diff, nao tem revisao e nao tem
+# rollback. Se alguem apaga um widget na sexta, ninguem sabe o que tinha la.
+# Aqui ele e um arquivo JSON versionado que sobe junto no `bundle deploy` -- e
+# se alguem apagar o dashboard inteiro, um deploy traz de volta identico.
+#
+# dataset_catalog e dataset_schema sao o que permitem as queries do JSON usarem
+# nome de tabela PURO (`FROM fato_vendas`). Se a query prefixar o catalogo, os
+# dois sao ignorados e o dashboard deixa de ser portavel entre ambientes.
+#
+# A chave `comercial` precisa ser unica entre TODOS os recursos do bundle,
+# inclusive os de outros tipos (jobs, schemas, volumes).
+resources:
+  dashboards:
+    comercial:
+      display_name: Rota Perfume · Comercial
+      file_path: ./dashboard-comercial.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: gold

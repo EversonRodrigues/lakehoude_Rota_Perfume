@@ -1,0 +1,11 @@
+# Cache do VS Code / extensao do Claude Code -- 160 MB de binario que nao tem
+# nada a ver com o projeto.
+.vscode-cache/
+
+# Estado local da CLI do Databricks (bundle state, credenciais de deploy).
+.databricks/
+
+# Ambientes virtuais e caches de ferramenta, caso apareçam fora do bundle.
+.venv/
+__pycache__/
+.ruff_cache/

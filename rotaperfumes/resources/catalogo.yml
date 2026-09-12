@@ -1,0 +1,41 @@
+# O catalogo como codigo.
+#
+# O que NAO esta aqui: o `CREATE CATALOG`. No Databricks Free Edition o Default
+# Storage esta ligado, e nessa configuracao a API do Unity Catalog recusa criar
+# catalogo por falta de MANAGED LOCATION:
+#   Metastore storage root URL does not exist. (400 INVALID_STATE)
+# O comando SQL funciona. Por isso o catalogo nasce em scripts/criar-catalogo.ps1
+# e daqui para baixo -- schemas e volume -- e tudo recurso do bundle.
+resources:
+  schemas:
+    bronze:
+      catalog_name: ${var.catalog}
+      name: bronze
+      comment: >-
+        Camada bronze: o dado como ele chegou, uma tabela por arquivo de origem,
+        sem regra de negocio aplicada.
+
+    silver:
+      catalog_name: ${var.catalog}
+      name: silver
+      comment: >-
+        Camada silver: o dado limpo, tipado e deduplicado, ja pronto para juntar
+        entre sistemas (ERP com CRM).
+
+    gold:
+      catalog_name: ${var.catalog}
+      name: gold
+      comment: >-
+        Camada gold: as tabelas que respondem pergunta de negocio -- faturamento,
+        carteira, desempenho de vendedor.
+
+  volumes:
+    raw:
+      catalog_name: ${var.catalog}
+      schema_name: bronze
+      name: raw
+      volume_type: MANAGED
+      comment: >-
+        Raw nao e bronze: raw e arquivo, bronze e tabela. Aqui fica o CSV
+        exatamente como saiu do ERP/CRM, byte por byte -- e a resposta para
+        "esse numero veio de onde?".

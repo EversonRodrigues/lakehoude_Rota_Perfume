@@ -1,0 +1,176 @@
+# O job da Rota Perfume. Uma tarefa por entrega -- ele cresce ao longo das seis
+# noites, sempre neste arquivo:
+#
+#   1. raw_conferencia   [feito] entrega 1: os 10 arquivos chegaram ao Volume?
+#   2. bronze_ingestao   [feito] entrega 2: Volume -> tabelas bronze, uma por
+#                                arquivo, e a contagem tem que fechar com a
+#                                conferencia de chegada
+#   3. silver_*          [feito] entrega 3: limpeza, tipagem e o contrato em
+#                                CHECK constraint -- quatro tarefas SQL que
+#                                rodam EM PARALELO entre si
+#   4. gold_* + testes   [feito] entrega 4: dimensoes conformadas, fato_vendas
+#                                no grao de item, tres marts por diretoria e os
+#                                9 testes que PARAM o job -- encadeadas, nao
+#                                paralelas, e `testes` e sempre a ultima
+#   5. qualidade            entrega 5: expectativas e quarentena
+#   6. observabilidade      entrega 6: metricas e alerta do pipeline
+#
+# Cada tarefa nova entra com `depends_on` na anterior: nada de bronze antes da
+# conferencia dizer que o arquivo chegou, nada de silver antes da bronze existir.
+#
+# Tudo serverless: este e um workspace Free Edition, nunca configure cluster.
+resources:
+  jobs:
+    rotaperfume_pipeline:
+      name: rotaperfume_pipeline
+      description: >-
+        Pipeline da Rota Perfume: do arquivo no Volume ate a tabela de negocio.
+        Entregas 1 a 4 -- conferencia do raw, carga da bronze, limpeza silver
+        com contrato em CHECK constraint, e a gold modelada para consumo com
+        9 testes que interrompem o job.
+
+      tasks:
+        - task_key: raw_conferencia
+          description: >-
+            Confere que os 10 CSVs chegaram ao Volume e nao vieram vazios,
+            registra bronze._raw_arquivos e falha o job se algo faltar.
+          notebook_task:
+            notebook_path: ../src/raw/conferencia.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: bronze_ingestao
+          description: >-
+            Le os 10 CSVs do Volume e grava 10 tabelas bronze (toda coluna
+            STRING, mais _arquivo_origem e _ingerido_em). Falha se a contagem
+            nao fechar com bronze._raw_arquivos.
+          depends_on:
+            # Nada de bronze antes da conferencia dizer que o arquivo chegou.
+            - task_key: raw_conferencia
+          notebook_task:
+            notebook_path: ../src/bronze/ingestao.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # As quatro tarefas silver dependem so da bronze, nao umas das outras --
+        # entao rodam EM PARALELO, e o DAG desenha isso como um leque na tela.
+        #
+        # O SQL escreve o caminho completo (lakehouse_rotaperfume.silver.x) de
+        # proposito: sql_task nao substitui identificador por parametro, e SQL
+        # legivel vale mais numa aula do que IDENTIFIER(:catalog || '.silver.x').
+        - task_key: silver_clientes
+          description: >-
+            Normaliza CNPJ para 14 digitos, padroniza razao social, converte as
+            datas dos dois formatos e deduplica 40 CNPJs repetidos mantendo o
+            cadastro mais antigo. 3.040 cadastros viram 3.000 clientes.
+          depends_on:
+            - task_key: bronze_ingestao
+          sql_task:
+            file:
+              path: ../src/silver/01-clientes.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        - task_key: silver_pedidos
+          description: >-
+            Tipa valores, converte 3.443 datas em dd/MM/yyyy e torna o
+            cancelamento explicito em coluna, com valor_liquido zerado.
+          depends_on:
+            - task_key: bronze_ingestao
+          sql_task:
+            file:
+              path: ../src/silver/02-pedidos.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        - task_key: silver_itens_produtos
+          description: >-
+            Produtos tipados e itens com devolucao SINALIZADA, nunca descartada
+            (2.327 itens), mais sku_descontinuado por join com produtos.
+          depends_on:
+            - task_key: bronze_ingestao
+          sql_task:
+            file:
+              path: ../src/silver/03-itens-e-produtos.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        - task_key: silver_crm_financeiro
+          description: >-
+            Vendedores, carteira, oportunidades, visitas, pagamentos e estoque.
+            A carteira nao conserta a orfandade: expoe as 441 carteiras abertas
+            de vendedor desligado.
+          depends_on:
+            - task_key: bronze_ingestao
+          sql_task:
+            file:
+              path: ../src/silver/04-crm-e-financeiro.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        # A gold e ENCADEADA, ao contrario das silver: dimensao antes do fato,
+        # fato antes dos marts, e os testes por ultimo. Cada etapa le a anterior.
+        - task_key: gold_dimensoes
+          description: >-
+            As quatro dimensoes conformadas (cliente, produto, vendedor,
+            calendario). Conformada = a mesma dimensao serve todos os marts,
+            entao todos somam igual.
+          depends_on:
+            - task_key: silver_clientes
+            - task_key: silver_pedidos
+            - task_key: silver_itens_produtos
+            - task_key: silver_crm_financeiro
+          sql_task:
+            file:
+              path: ../src/gold/05-dimensoes.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        - task_key: gold_fato_vendas
+          description: >-
+            fato_vendas no grao de ITEM de pedido, sem cancelado e COM devolucao
+            negativa e sinalizada. 191.080 linhas somando R$ 102.303.828,05 --
+            o mesmo total da silver.
+          depends_on:
+            - task_key: gold_dimensoes
+          sql_task:
+            file:
+              path: ../src/gold/06-fato-vendas.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        - task_key: gold_marts
+          description: >-
+            Tres marts sobre o MESMO fato: comercial, produto e financeiro. O
+            que os separa e a dimensao dominante, nunca a tabela base.
+          depends_on:
+            - task_key: gold_fato_vendas
+          sql_task:
+            file:
+              path: ../src/gold/07-marts.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        # Por ultimo, e obrigatorio. Teste que nao quebra o job e relatorio.
+        # Quando esta tarefa fica vermelha, o dashboard fica com o dado de
+        # ontem -- melhor que ficar com o dado errado de hoje.
+        - task_key: testes
+          description: >-
+            Os 9 testes de qualidade. Cada um levanta raise_error quando falha,
+            e o job PARA. Se um falhar, corrija a transformacao -- nunca o teste.
+          depends_on:
+            - task_key: gold_marts
+          sql_task:
+            file:
+              path: ../src/gold/08-testes.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+      schedule:
+        # 6h da manha, horario de Brasilia. Em dev o preset
+        # `trigger_pause_status: PAUSED` (databricks.yml) mantem isso pausado.
+        quartz_cron_expression: 0 0 6 * * ?
+        timezone_id: America/Sao_Paulo
+
+      # Uma execucao por vez: conferencia concorrente so gera confusao no log.
+      max_concurrent_runs: 1
