@@ -97,6 +97,28 @@ actually fire, change the Volume and run the second task alone:
   conformed dimensions, `fato_vendas` at **item-of-order grain** (191,080 rows),
   three marts over that one fact, and 9 tests. The gold reads **only from
   silver**, never bronze. 10 tasks total in the job.
+- `src/ml/09-features.py` (task `ml_features`, `depends_on` `testes`) — night 3's
+  first deliverable. One `montar_features(referencia)` builds 20 features per
+  client from data strictly **before** a cutoff date passed as a parameter, and
+  is called twice: `gold.features_treino` (cutoff 2026-08-01, plus the
+  `comprou_em_7d` label) and `gold.features_cliente` (cutoff 2026-08-31, no
+  label). One function for train and score is what makes training/serving skew
+  impossible. Measured: **2,815 / 2,816 clients, base rate 10.12%** (285 buyers
+  in the 7-day window).
+- `src/ml/10-modelo.py` (task `ml_modelo`, `depends_on` `ml_features`) — measures
+  the simple-rule baselines **before** training, fits a
+  `HistGradientBoostingClassifier`, registers it at
+  `gold.propensao_compra` in Unity Catalog with alias `@prod`, and writes
+  `gold.score_propensao`, `gold.modelo_metricas`, `gold.calibragem_holdout`.
+  Measured: AUC **0.8816**, `lift_top200` **4.15×**, **84** of the top 200 bought
+  against 20 at random. Three `assert`s stop the task — including `auc < 0.99`,
+  because leakage arrives as praise, not as an error.
+- `src/ml/11-fila.sql` (task `ml_fila`, `depends_on` `ml_modelo`) — the last mile:
+  `gold.fila_semanal` (200 calls with name, a Portuguese `motivo` and what to
+  offer), four SQL functions in UC that the agent calls
+  (`priorizar_carteira`, `contexto_cliente`, `sugerir_produtos`,
+  `checar_disponibilidade`), and three `raise_error` tests. Plus
+  `resources/genie-comercial.json`, the Genie Space payload.
 - `resources/dashboard-comercial.lvdash.json` + `resources/dashboard.dashboard.yml`
   (resource `dashboards.comercial`) — the AI/BI dashboard **as code**, deployed by
   the bundle, not clicked. 14 widgets over a **single** dataset `ds_vendas`, with
@@ -239,6 +261,55 @@ if no compute is configured. There is no way to run the suite offline.
   comes back identical, the link does not — re-read it from `bundle summary`.
 - **`bundle` commands must run from inside `rotaperfumes/`**, or they fail with
   `Unable to locate the bundle root`.
+- **Never build an ML feature from `gold.dim_cliente`.** Its `dias_sem_comprar`,
+  `receita_acumulada` and `total_pedidos` are aggregated over the whole base with
+  no cutoff — using any of them is leakage. Features come from `fato_vendas`,
+  `silver.oportunidades` and `silver.visitas`, each filtered `< referencia` on the
+  first line of the read. Negative `recencia_dias` is the signature of a source
+  that escaped the filter.
+- **`F.least()` ignores NULLs** — `least(NULL, 10)` returns `10`, not NULL. Capping
+  `atraso_relativo` that way silently gave all 105 single-order clients the maximum
+  alarm value and floated them to the top of the call queue. Use
+  `when(razao > 10, 10).otherwise(razao)`, which propagates the NULL.
+- **Escape single quotes in `COMMENT` strings.** A comment containing
+  `'Fechado ganho'` ends the SQL literal and fails with `PARSE_SYNTAX_ERROR`;
+  double them (`''`) when building the statement.
+- **The dataset's "today" is 2026-08-31**, the max `data_pedido`. Never use
+  `current_date()` in ML code — the day the notebook runs has nothing to do with
+  the day the data knows.
+- **`atraso_relativo` is non-monotonic, and that is the point of the ML night.**
+  Purchase rate by band: <0.5 → 0.5% · 0.5–1.0 → 17.6% · **1.0–1.5 → 36.6%** ·
+  1.5–3.0 → 14.4% · ≥3.0 → **0%**. The peak is in the middle, so sorting the
+  column descending puts the 0% group first — AUC 0.78 yet only **1** hit in the
+  top 200. No single-column sort can express this; a tree can. Both ends of
+  `recencia_dias` also yield **zero** buyers in a top-200 list.
+- **MLflow on serverless is 2.x**: `log_model(..., artifact_path="modelo")`, never
+  MLflow 3's `name=`. `MlflowClient().get_registered_model(...).latest_versions`
+  does **not** work against the Unity Catalog registry — register in a separate
+  step and read `mlflow.register_model(...).version`. And call
+  `WorkspaceClient().workspace.mkdirs(...)` before `set_experiment`, or you get
+  `BAD_REQUEST: For input string: "None"`, which never mentions a folder.
+- **Score with `predict_proba`, never `pyfunc.predict`** (returns the class and
+  flattens the column to 0/1), and never `pyfunc.spark_udf` on serverless
+  (`InvalidVersion: '18.x-aarch64-photon-scala2'`). Read column order from
+  `modelo.feature_names_in_` — wrong order gives wrong numbers, not an error.
+- **Salesperson names are NOT unique.** `silver.vendedores` has two
+  `Henrique Oliveira` (ids 34, 36) and two `Vinícius Lopes` (31, 37). Key
+  anything per-salesperson on `vendedor_id`; grouping by name silently merges two
+  people's queues — `COUNT(DISTINCT vendedor)` reads 35 where `vendedor_id`
+  reads 36.
+- **Filter eligibility BEFORE `LIMIT`, not after.** Six of the 42 salespeople are
+  terminated with live portfolios; filtering after `ORDER BY score DESC LIMIT 200`
+  leaves **165** rows instead of 200.
+- **`LIMIT` cannot take a function parameter** — `LIMIT p_quantos` fails with
+  `INVALID_LIMIT_LIKE_EXPRESSION.IS_UNFOLDABLE`. Filter on a precomputed rank
+  column instead.
+- **Genie is not a DABs resource type.** The space is created by
+  `databricks genie create-space` and its payload lives in
+  `resources/genie-comercial.json` for versioning. The `serialized_space` schema
+  needs 32-hex `id`s, array-valued text fields, and at most **one**
+  `text_instructions` entry. Run workspace/Genie path commands from **PowerShell**
+  — Git Bash rewrites `/Users/...` into a Windows path.
 - `tests/conftest.py` ships from the template with two unsorted-import (`I001`)
   findings. Pre-existing, autofixable, untouched so far.
 - Prefer Volumes over DBFS: a Volume is a UC object with an owner, permissions,

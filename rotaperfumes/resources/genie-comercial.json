@@ -1,0 +1,63 @@
+{
+  "version": 2,
+  "config": {
+    "sample_questions": [
+      { "id": "10000000000000000000000000000001", "question": ["Quem eu ligo essa semana?"] },
+      { "id": "10000000000000000000000000000002", "question": ["Por que esse cliente esta no topo da minha lista?"] },
+      { "id": "10000000000000000000000000000003", "question": ["Quantas ligacoes cada vendedor recebeu essa semana?"] },
+      { "id": "10000000000000000000000000000004", "question": ["Tem estoque do SKU00042?"] }
+    ]
+  },
+  "data_sources": {
+    "tables": [
+      { "identifier": "lakehouse_rotaperfume.gold.dim_cliente" },
+      { "identifier": "lakehouse_rotaperfume.gold.fila_semanal" },
+      { "identifier": "lakehouse_rotaperfume.gold.score_propensao" }
+    ]
+  },
+  "instructions": {
+    "example_question_sqls": [
+      {
+        "id": "20000000000000000000000000000001",
+        "question": ["Quem eu ligo essa semana?"],
+        "sql": [
+          "SELECT vendedor, ordem, razao_social, cidade, ROUND(score, 2) AS score, motivo, sugestao\n",
+          "FROM lakehouse_rotaperfume.gold.fila_semanal\n",
+          "ORDER BY vendedor_id, ordem"
+        ]
+      },
+      {
+        "id": "20000000000000000000000000000002",
+        "question": ["Quantas ligacoes cada vendedor recebeu essa semana?"],
+        "sql": [
+          "SELECT vendedor_id, vendedor, COUNT(*) AS ligacoes, ROUND(AVG(score), 3) AS score_medio\n",
+          "FROM lakehouse_rotaperfume.gold.fila_semanal\n",
+          "GROUP BY vendedor_id, vendedor ORDER BY ligacoes DESC"
+        ]
+      },
+      {
+        "id": "20000000000000000000000000000003",
+        "question": ["Por que a Perfumaria Aurora esta no topo da minha lista?"],
+        "sql": [
+          "SELECT razao_social, ROUND(score, 3) AS score, faixa, motivo, sugestao\n",
+          "FROM lakehouse_rotaperfume.gold.fila_semanal\n",
+          "WHERE razao_social ILIKE '%Aurora%'"
+        ]
+      }
+    ],
+    "text_instructions": [
+      {
+        "id": "30000000000000000000000000000001",
+        "content": [
+          "Use SEMPRE as tabelas e funcoes deste espaco. NUNCA invente numero, nome de cliente ou quantidade de estoque: se o dado nao estiver aqui, diga que nao sabe.\n",
+          "A fila da semana e gold.fila_semanal: 200 linhas, uma por ligacao, ja atribuidas ao vendedor dono da carteira vigente. Para 'quem eu ligo', use essa tabela e ordene por ordem.\n",
+          "A coluna motivo ja traz, em portugues, por que o cliente esta na fila. Para 'por que fulano esta na lista', devolva o motivo -- nao tente reexplicar o modelo.\n",
+          "ATENCAO aos homonimos: existem dois vendedores chamados 'Henrique Oliveira' e dois 'Vinicius Lopes'. SEMPRE agrupe por vendedor_id, nunca so pelo nome, e mostre vendedor_id quando houver ambiguidade.\n",
+          "score e a probabilidade de compra nos proximos 7 dias, de 0 a 1, vinda de gold.score_propensao. A taxa base da semana e 10,12%: ligar no aleatorio acerta cerca de 20 em 200.\n",
+          "Para disponibilidade de produto, use a funcao gold.checar_disponibilidade(sku) -- ela le o snapshot mais recente daquele SKU. Nunca afirme que ha estoque sem consultar.\n",
+          "Outras funcoes uteis: gold.priorizar_carteira(nome_do_vendedor, quantos), gold.contexto_cliente(cliente_id) e gold.sugerir_produtos(cliente_id)."
+        ]
+      }
+    ]
+  }
+}

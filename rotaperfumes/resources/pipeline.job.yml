@@ -12,8 +12,18 @@
 #                                no grao de item, tres marts por diretoria e os
 #                                9 testes que PARAM o job -- encadeadas, nao
 #                                paralelas, e `testes` e sempre a ultima
-#   5. qualidade            entrega 5: expectativas e quarentena
-#   6. observabilidade      entrega 6: metricas e alerta do pipeline
+#   5. dashboard         [feito] entrega 5: o AI/BI comercial como recurso do
+#                                bundle (resources/dashboard.dashboard.yml)
+#
+# NOITE 3 -- a camada de ML entra no MESMO pipeline, nao num projeto separado:
+#   6. ml_features       [feito] features de cliente com data de corte por
+#                                parametro: gold.features_treino e
+#                                gold.features_cliente
+#   7. ml_modelo         [feito] o modelo registrado no UC, os 3 testes que
+#                                desconfiam do sucesso, e gold.score_propensao
+#   8. ml_fila           [feito] gold.fila_semanal -- as 200 ligacoes com nome,
+#                                motivo em portugues e o que oferecer -- mais as
+#                                quatro funcoes que o agente consulta
 #
 # Cada tarefa nova entra com `depends_on` na anterior: nada de bronze antes da
 # conferencia dizer que o arquivo chegou, nada de silver antes da bronze existir.
@@ -163,6 +173,52 @@ resources:
           sql_task:
             file:
               path: ../src/gold/08-testes.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        # ML e mais uma camada do mesmo pipeline, no mesmo bundle, com os mesmos
+        # testes que quebram o job. Nao existe "projeto de ML" separado -- e o
+        # DAG que prova isso.
+        - task_key: ml_features
+          description: >-
+            Uma linha por cliente com tudo que se sabia dele ate uma data de
+            corte que entra por parametro. A mesma funcao gera features_treino
+            (com alvo) e features_cliente (sem alvo), o que torna o
+            training/serving skew impossivel por construcao.
+          depends_on:
+            # Modelo nao se treina com dado que ainda nao passou nos testes.
+            - task_key: testes
+          notebook_task:
+            notebook_path: ../src/ml/09-features.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        - task_key: ml_modelo
+          description: >-
+            Mede os baselines ANTES de treinar, treina o HistGradientBoosting,
+            registra no Unity Catalog com alias @prod e pontua os clientes. Tem
+            tres assert que interrompem a tarefa -- inclusive um que quebra se o
+            AUC vier alto demais, porque vazamento chega com elogio, nao com erro.
+          depends_on:
+            - task_key: ml_features
+          notebook_task:
+            notebook_path: ../src/ml/10-modelo.py
+            base_parameters:
+              catalog: ${var.catalog}
+
+        # O ultimo metro: score nao e decisao. Aqui ele vira uma lista com nome,
+        # motivo em portugues e o que oferecer -- e quatro funcoes no catalogo
+        # que o agente consulta em vez de inventar.
+        - task_key: ml_fila
+          description: >-
+            Monta gold.fila_semanal (200 ligacoes, carteira vigente, filtro
+            ANTES do LIMIT), cria as quatro ferramentas como funcoes SQL no UC e
+            roda tres testes que quebram o job.
+          depends_on:
+            - task_key: ml_modelo
+          sql_task:
+            file:
+              path: ../src/ml/11-fila.sql
               source: WORKSPACE
             warehouse_id: ${var.warehouse_id}
 
