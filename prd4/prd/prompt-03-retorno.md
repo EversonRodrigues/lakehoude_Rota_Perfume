@@ -15,11 +15,14 @@ linha de `gold.retorno_ligacao` escrita ao vivo. **Deploy nº 3 — o último.**
 
 ## O ambiente, conferido hoje
 
+Workspace `rotaperfumes`, profile `rotaperfumes`, app em `rotaperfume-direcao/`
+na raiz do repositório.
+
 | Fonte | Estado |
 |---|---|
 | `gold.retorno_ligacao` | existe desde o prompt 1, **0 linhas** |
 | O app | no ar, lendo a fila — mas só lendo |
-| Service principal do app | tem `SELECT` na gold. **Não tem `MODIFY`** |
+| Service principal | `eb3f667e-164d-4906-b495-404d6113f210`. Tem `SELECT` na gold. **Não tem `MODIFY`** |
 
 ---
 
@@ -32,12 +35,10 @@ linha de `gold.retorno_ligacao` escrita ao vivo. **Deploy nº 3 — o último.**
 SELECT COUNT(*) FROM lakehouse_rotaperfume.gold.retorno_ligacao;   -- 0
 ```
 
-> *"O modelo diz que 86 dos 200 vão comprar. Alguém aqui sabe se ele acertou?
+> *"O modelo diz que 84 dos 200 vão comprar. Alguém aqui sabe se ele acertou?
 > Não. Não porque a conta é difícil — porque o dado nunca voltou."*
 
 **2 · O desenho que a sala precisa entender antes do código**
-
-Desenhe no quadro, ou no slide:
 
 ```
    pipeline  →  score  →  fila  →  ligação  →  ???
@@ -75,9 +76,8 @@ A resposta que aparece é "acesso de escrita na gold". E aí:
   `x-forwarded-email`, que o Databricks Apps injeta. Sem isso, ninguém sabe
   quem disse que vendeu.
 - **A tela não se atualiza sozinha.** `useAnalyticsQuery` não tem `refetch`:
-  depois de gravar é preciso mudar a chave do cache. A saída é um parâmetro que
-  **não filtra nada** — o dado precisa ser pedido de novo, não filtrado de
-  novo.
+  ele devolve `{data, loading, error, errorCode, warehouseStatus}` e mais nada.
+  A única alavanca é remontar quem chama a consulta.
 
 ---
 
@@ -105,8 +105,20 @@ o que aconteceu na ligação.
    warehouse_id vindo do próprio contexto, e TODO valor passado como
    parameters — nunca concatenado na string do SQL.
 
+   NÃO use appkit.analytics.query() para escrever. Ele passa pelo pipeline de
+   interceptors com attempts: 3, e um INSERT não é idempotente: uma tentativa
+   repetida grava a linha duas vezes. O caminho cru não tem retry.
+
+   ATENÇÃO ao contexto: `warehouseId` é uma Promise E é opcional. Precisa de
+   await, e de um 500 com mensagem clara se vier undefined.
+
+   O handler precisa do PRÓPRIO try/catch: o server.extend registra direto no
+   Express, e o Express não encaminha rejeição de Promise para o middleware de
+   erro — sem catch, uma falha vira requisição pendurada.
+
    registrado_por sai do header x-forwarded-email (com um valor local de
-   desenvolvimento como reserva), registrado_em de current_timestamp().
+   desenvolvimento como reserva), registrado_em de current_timestamp() — o
+   relógio do WAREHOUSE, não o do navegador de quem clicou.
 
    Mantenha também GET /api/quem-sou, que a aba Perguntar já usa.
 
@@ -116,7 +128,8 @@ o que aconteceu na ligação.
 
    Uma coluna "Como foi a ligação". Para o cliente sem retorno: um campo de
    texto curto para o comentário e quatro botões — Vendeu, Vai pensar, Sem
-   interesse, Não atendeu. O clique grava e desabilita enquanto grava.
+   interesse, Não atendeu. O clique grava e desabilita a LINHA enquanto grava,
+   não a tabela toda.
    Para quem já tem retorno: mostre o status como Badge e o comentário
    embaixo, sem os botões.
 
@@ -134,18 +147,20 @@ o que aconteceu na ligação.
    — a tela quebra sozinha depois de um deploy.
 
    Faça as duas coisas:
-   a) desligue o cache de leitura no createApp: cache: { enabled: false }.
-      São 200 linhas, e todas mudam quando alguém clica
+   a) desligue o cache de leitura NO TOPO do createApp: cache: {enabled:false}.
+      Tem que ser no topo — `analytics({ cache: ... })` compila e é
+      SILENCIOSAMENTE IGNORADO, e o padrão do plugin é cachear por 1 HORA
    b) recarregue em React: guarde filtro e comentários no componente PAI e
       remonte o filho com uma `key` que muda a cada gravação. Remontar refaz
       a consulta, sem inventar coluna nem parâmetro
 
 4. A ABA "Acompanhamento" (rota /acompanhamento)
 
-   Lê acompanhamento.sql:
+   Lê acompanhamento.sql, que já existe desde o prompt 2:
    - no topo, uma frase: quantos dos 200 foram trabalhados e quantos viraram
      pedido
-   - um gráfico de barras por vendedor: trabalhados e vendeu
+   - um gráfico de barras por vendedor: trabalhados e vendeu. É ECharts —
+     configure por props (queryKey, xKey, yKey), nunca por filhos tipo Recharts
    - a tabela com o desfecho por vendedor
 
    Enquanto ninguém registrou nada, mostre um Empty dizendo que o número
@@ -159,47 +174,70 @@ o que aconteceu na ligação.
    Em TABLE, não em SCHEMA. O app não pode alterar mais nada da gold.
 
 6. Suba:
-   databricks apps validate --profile projeto-dados-ia
-   databricks apps deploy -t default --profile projeto-dados-ia
+   databricks apps validate --profile rotaperfumes
+   databricks apps deploy -t default --profile rotaperfumes
 ```
 
 ---
 
 ## Como verificar a feature
 
-**1 · O momento da noite: clique, e mostre a linha**
+**1 · O contrato recusa o que não é válido — e nada chega ao warehouse**
 
-No app, primeiro cliente da fila — *Farmácia Serena*, Goiânia, score **0,974**.
-Escreva no comentário *"pediu para ligar quinta"* e clique em **Vendeu**.
+O app publicado exige OAuth, então o jeito de testar o POST por fora é local:
 
-Agora, no SQL Editor, com a sala olhando:
+```bash
+# No Git Bash (o script `dev` do template usa NODE_ENV=x no estilo Unix e
+# quebra no cmd do Windows — rode o tsx direto):
+NODE_ENV=development npx tsx --tsconfig ./tsconfig.server.json \
+  --env-file-if-exists=./.env ./server/server.ts
+
+curl -s -X POST http://localhost:8000/api/retorno -H "Content-Type: application/json" \
+  -d '{"cliente_id":2137,"vendedor":"Bruno Souza","status":"talvez","referencia":"2026-09-16"}'
+```
+
+Devolve **400** com os quatro valores aceitos e o campo que falhou:
+
+```json
+{"erro":"Corpo invalido.",
+ "aceitos":["vendeu","vai_pensar","sem_interesse","nao_atendeu"],
+ "detalhe":{"status":["Invalid option: expected one of \"vendeu\"|..."]}}
+```
+
+```sql
+SELECT COUNT(*) FROM lakehouse_rotaperfume.gold.retorno_ligacao;  -- ainda 0
+```
+
+**Botão é interface; o enum é o contrato.**
+
+**2 · O caso válido grava — e o `cliente_id` vai como STRING de propósito**
+
+```bash
+curl -s -X POST http://localhost:8000/api/retorno -H "Content-Type: application/json" \
+  -d '{"cliente_id":"2137","vendedor":"Bruno Souza","status":"vendeu",
+       "comentario":"pediu para ligar quinta","referencia":"2026-09-16"}'
+# {"gravado":true,...}  HTTP 201
+```
+
+Repare nas aspas em `"2137"`: é assim que o dado chega do warehouse, e o
+`z.coerce.number().int()` resolve. Sem ele, 400.
 
 ```sql
 SELECT cliente_id, vendedor, status, comentario, registrado_por, registrado_em
 FROM   lakehouse_rotaperfume.gold.retorno_ligacao;
 ```
 
-A linha está lá, com **o seu e-mail** em `registrado_por`.
+A linha está lá. Rodando local não há OAuth, então `registrado_por` vem
+`desenvolvimento-local`; **no app publicado vem o e-mail real**.
 
 > *"Segunda a query quebrou por causa de data em dois formatos. Hoje um clique
 > virou uma linha na gold. É o mesmo lugar — o dado deu a volta inteira."*
 
-**2 · O contrato recusa o que não é válido**
-
-```bash
-curl -X POST <URL-do-app>/api/retorno \
-  -H "Content-Type: application/json" \
-  -d '{"cliente_id":2137,"vendedor":"Bruno Souza","status":"talvez","referencia":"2026-08-31"}'
-```
-
-Devolve **400** com a lista dos quatro valores aceitos, e **nada** chega ao
-warehouse. Botão é interface; o enum é o contrato.
-
 **3 · A tela reflete na hora**
 
-Depois do clique, o cartão *Já trabalhados* vai de **0** para **1**, e o
-cliente aparece com o Badge em vez dos botões. Se não mudar, o parâmetro de
-recarga não está subindo.
+Depois do clique, o cartão *Já trabalhados* sai de **0**, e o cliente aparece
+com o Badge em vez dos botões. Se não mudar, ou a `key` não subiu ou o cache
+ficou ligado.
 
 **4 · O Genie do prompt 1 responde sobre o que acabou de acontecer**
 
@@ -207,14 +245,24 @@ Volte para a aba *Perguntar* — ou abra o space direto — e pergunte:
 
 > *"Quantas ligações já foram registradas e quantas viraram pedido?"*
 
-Ele agora responde **1 e 1**. Vinte minutos atrás, respondia que ninguém tinha
-registrado nada. **Nenhuma linha de código do Genie mudou** — mudou o dado
-embaixo dele.
+Ele agora responde com o número. Vinte minutos atrás, respondia que ninguém
+tinha registrado nada. **Nenhuma linha de código do Genie mudou** — mudou o
+dado embaixo dele.
 
-**5 · Limpe antes de encerrar, se for ensaiar de novo**
+**5 · O cliente da demo, nesta base**
 
-```sql
-DELETE FROM lakehouse_rotaperfume.gold.retorno_ligacao;
+**Farmácia Serena Ltda Me**, `cliente_id` **2137**, Goiânia/GO, vendedor
+**Bruno Souza**, score **0,9819**.
+
+> O roteiro original a chama de "primeiro cliente da fila". Aqui ela é a
+> **segunda**: `Perfumaria Prime Ltda` (id 268, Curitiba, Rafael Soares) vem à
+> frente com 0,98208 contra 0,98191. O `cliente_id` e o vendedor batem
+> exatamente; só a ordem mudou.
+
+**6 · Limpe antes de encerrar, se for ensaiar de novo**
+
+```bash
+bash prd/99-limpar-retornos.sh rotaperfumes --apagar
 ```
 
 ---
@@ -224,11 +272,16 @@ DELETE FROM lakehouse_rotaperfume.gold.retorno_ligacao;
 | Sintoma | Causa | Saída |
 |---|---|---|
 | `PERMISSION_DENIED` ao gravar | falta `MODIFY` na tabela | `GRANT MODIFY ON TABLE ... TO \`<sp>\`` — em TABLE, não em SCHEMA |
-| Grava, mas a tela não muda | a `key` não mudou, ou o cache está ligado | `cache: { enabled: false }` + `key` que muda a cada gravação |
-| `UNBOUND_SQL_PARAMETER: recarga` | o SQL pede um parâmetro que a tela não manda — JS antigo no navegador do usuário | Não use parâmetro falso para furar cache. Se já usou, `Ctrl+Shift+R` resolve o sintoma |
-| `registrado_por` sempre igual | rodando local, sem OAuth | Em `npm run dev` não há header. No app publicado, vem o e-mail real |
+| Grava, mas a tela não muda | a `key` não mudou, ou o cache está ligado | `cache: { enabled: false }` **no topo do createApp** + `key` que muda a cada gravação |
+| Desliguei o cache no plugin e não adiantou | `analytics({ cache })` **compila e é ignorado** — o plugin crava `ttl: 3600` e nunca lê a config | Só o `cache` top-level do `createApp` funciona |
+| A mesma linha aparece duas vezes | usou `analytics.query()` para escrever, e ele tem `attempts: 3` | `INSERT` não é idempotente. Use o `executeStatement` cru, que não tem retry |
+| `UNBOUND_SQL_PARAMETER: recarga` | o SQL pede um parâmetro que a tela não manda — JS antigo no navegador | Não use parâmetro falso para furar cache. Se já usou, `Ctrl+Shift+R` resolve o sintoma |
+| Erro de tipo no `executeStatement` | `warehouseId` é `Promise<string> \| undefined` | `await`, e 500 com mensagem se vier vazio |
+| Requisição pendurada quando o warehouse falha | handler async sem `try/catch` | O Express **não** encaminha rejeição de Promise. Catch dentro da própria rota |
+| Segui a doc de execution-context e não compilou | a doc lista `getCurrentUserId()`, `getWarehouseId()`, `getWorkspaceId()` — que **não existem** | Vale o `.d.ts`. E `getWorkspaceClient()` existe mas é helper de **Lakebase**, não do contexto |
+| `'NODE_ENV' não é reconhecido...` | `npm run dev` roda via `cmd.exe` no Windows e o script usa sintaxe Unix | Rode o `tsx` direto pelo Git Bash |
+| `registrado_por` sempre igual | rodando local, sem OAuth | Em dev não há header. No app publicado, vem o e-mail real |
 | O POST devolve 400 sem motivo claro | Zod recusou o corpo | Leia `detalhe` na resposta: ele diz qual campo e o que era esperado |
-| Erro de tipo no `executeStatement` | `serviceDatabricksClient` não existe | O contexto expõe `client` e `warehouseId` |
 | O POST devolve 400 dizendo que `cliente_id` não é número | a tela mandou `"2137"`, string | `z.coerce.number().int()` no servidor e `Number()` na tela |
 | O gráfico do acompanhamento não aparece | ninguém registrou nada ainda | É o estado vazio, e ele está certo. Registre um retorno |
 | Deploy falha na primeira tentativa | erro transitório de compute do Free Edition | Rode o `apps deploy` de novo |

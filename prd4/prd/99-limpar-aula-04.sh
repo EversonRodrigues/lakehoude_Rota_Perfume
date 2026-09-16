@@ -24,7 +24,7 @@ CATALOGO="${CATALOGO:-lakehouse_rotaperfume}"
 
 AULA="$(cd "$(dirname "$0")/.." && pwd)"
 BUNDLE="$(cd "$AULA/../rotaperfumes" && pwd)"
-APP_DIR="$AULA/rotaperfume-direcao"
+APP_DIR="$(cd "$AULA/.." && pwd)/rotaperfume-direcao"
 APP_NOME="rotaperfume-direcao"
 
 echo "profile:   $PROFILE"
@@ -51,6 +51,19 @@ fi
 
 sql() { echo "$1" | databricks experimental aitools tools query --profile "$PROFILE" || true; }
 
+# Os GRANT vão embora ANTES do app: depois de apagado não dá mais para ler o
+# service principal dele, e as permissões ficariam órfãs no catálogo.
+SP="$(databricks apps get "$APP_NOME" --profile "$PROFILE" -o json 2>/dev/null \
+      | python -c "import json,sys;print(json.load(sys.stdin).get('service_principal_client_id') or '')" 2>/dev/null || true)"
+if [ -n "${SP:-}" ]; then
+  echo "→ revogando os GRANT do service principal $SP..."
+  sql "REVOKE SELECT ON SCHEMA $CATALOGO.gold FROM \`$SP\`"
+  sql "REVOKE USE SCHEMA ON SCHEMA $CATALOGO.gold FROM \`$SP\`"
+  sql "REVOKE USE CATALOG ON CATALOG $CATALOGO FROM \`$SP\`"
+else
+  echo "→ (não li o service principal — revogue à mão se precisar)"
+fi
+
 echo "→ apagando o Databricks App (leva ~20s)..."
 databricks apps delete "$APP_NOME" --profile "$PROFILE" 2>/dev/null || \
   echo "   (o app não existia)"
@@ -66,7 +79,9 @@ cd "$BUNDLE"
 rm -f resources/direcao.geniespace.json resources/genie-direcao.genie_space.yml
 rm -f src/gold/12-retorno-ligacao.sql src/gold/13-auditoria-metadado.sql
 rm -f scripts/rodar-tarefa.ps1
-git checkout -- resources/pipeline.job.yml src/gold/05-dimensoes.sql \n                src/gold/06-fato-vendas.sql src/gold/07-marts.sql \n                src/ml/11-fila.sql 2>/dev/null || \
+git checkout -- resources/pipeline.job.yml \
+                src/gold/05-dimensoes.sql src/gold/06-fato-vendas.sql \
+                src/gold/07-marts.sql src/ml/11-fila.sql 2>/dev/null || \
   echo "   (pipeline.job.yml não estava versionado — remova a tarefa gold_retorno_ligacao à mão)"
 
 echo "→ redeploy: o job volta a 13 tarefas e o genie_direcao some..."

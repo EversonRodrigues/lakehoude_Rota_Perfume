@@ -18,6 +18,14 @@ parts:
   Automation Bundles (DABs), one per workspace.** See below. All
   bundle/`uv`/`pytest` commands must be run from inside one of these
   directories, never the repo root.
+- `rotaperfume-direcao/` — **a Databricks App (AppKit: Node/TypeScript/React),
+  not a bundle.** Night 4's second deliverable: the 200-call queue on screen for
+  the sales director, with the `Rota Perfume · Direção` Genie embedded. It has
+  its **own deploy cycle** — `databricks apps deploy -t default`, target
+  `default`, never `dev` — and is **not** part of `rotaperfumes/`'s
+  `bundle deploy`. Running `bundle deploy` on it would create the app stopped,
+  with `no_compute` and no URL. Node commands (`npm run typegen`, `lint`,
+  `typecheck`) run from inside this directory.
 - `.llm/prompt_01.md` — the course script for deliverable 1. Read it before
   extending a bundle; it carries the target architecture and pitfalls learned the
   hard way. Written in Portuguese, as is the domain vocabulary throughout the
@@ -148,6 +156,57 @@ actually fire, change the Volume and run the second task alone:
   **estimate**; the director's metric is `lift_top200` and it must **never** cite
   AUC; zero returns means "nobody has registered one yet", never the queue used
   as if it were a result.
+- `rotaperfume-direcao/` — night 4's **second** deliverable, the app. Scaffolded
+  with `databricks apps init --features analytics,genie` (AppKit 0.57.0). Two
+  screens: `A semana` (four KPI cards + vendor filter + the 200-row queue) and
+  `Perguntar` (the Genie space embedded, with the signed-in e-mail from
+  `GET /api/quem-sou` and a permanent AI-disclosure note). Four queries in
+  `config/queries/`: `kpis_semana`, `vendedores`, `fila`, `acompanhamento`.
+  Measured live: **200 contacts, 36 sellers, R$ 556.423,71 expected, 4,15× lift,
+  84/200, 0 returns**. First deploy **4m27s**, redeploy **1m19s**.
+- **Night 4's third deliverable closed the loop**: a third screen
+  `Acompanhamento` (`/acompanhamento`, reading `acompanhamento.sql` + a
+  `BarChart` per seller) and the app's **only write path** —
+  `POST /api/retorno` in `server/server.ts`. Verified end to end: an invalid
+  `status` is refused with **400** and never reaches the warehouse; a valid body
+  writes the row; the Genie space then answered *"2 ligações registradas, 1
+  virou pedido"* where minutes earlier it said nobody had registered anything —
+  **with no Genie code changed at all**. Test rows deleted afterwards; the table
+  is back to 0, which is the correct starting state.
+
+**Read and write take deliberately different paths.** Every read is a typed
+`.sql` file under `config/queries/`; no route runs a `SELECT`. The single write
+is a `POST` whose value set is **closed by a Zod enum on the server**
+(`vendeu | vai_pensar | sem_interesse | nao_atendeu`) — the button is interface,
+the enum is the contract, and it is what stops the column from collecting
+"vendeu", "Vendeu" and "vendido". Three rules that are easy to get wrong:
+
+- **Never write through `appkit.analytics.query()`.** It runs inside the
+  interceptor pipeline with `attempts: 3`, and an `INSERT` is not idempotent —
+  a retry writes the row twice. Writes go through
+  `getExecutionContext().client.statementExecution.executeStatement`, which has
+  no retry. `warehouseId` on that context is a **`Promise<string> | undefined`**:
+  `await` it and handle the empty case.
+- **`server.extend` registers straight on Express, which does not forward
+  rejected promises.** An async route needs its own `try/catch` or a warehouse
+  failure becomes a hung request.
+- **Every value goes in `parameters`** (`{name, type?, value?}`, value always a
+  string, omitted = NULL), never concatenated. `registrado_em` comes from the
+  warehouse's `current_timestamp()`, not the clicking browser's clock.
+
+**The grant for writing is scoped to ONE table:**
+`GRANT MODIFY ON TABLE …gold.retorno_ligacao`, never `ON SCHEMA` — `MODIFY` on
+the schema would let the app rewrite `fato_vendas`.
+
+**Reading identity in an AppKit app is decided by the FILENAME, not the call
+site:** `x.sql` executes as the app's **service principal**; `x.obo.sql`
+executes as the signed-in **user**. All four queries here are plain `.sql`, so
+they depend entirely on the three `GRANT`s given to the service principal —
+`USE CATALOG` on the catalog, `USE SCHEMA` + `SELECT` on `gold`. Declaring the
+warehouse with `CAN_USE` grants **compute, not data**: without those grants the
+app loads, does not error, and shows empty panels. Read the principal fresh
+with `databricks apps get <app> -o json` (`service_principal_client_id`) — it
+is new for every app created, never copy it between environments.
 
 **Layer doctrine, enforced by the code:** raw is a file, bronze is a table, and
 bronze is the data *as it arrived* — `cnpj` keeps its surrounding spaces
@@ -361,6 +420,62 @@ if no compute is configured. There is no way to run the suite offline.
   as it arrived, and silver is the next debt to pay.
 - `tests/conftest.py` ships from the template with two unsorted-import (`I001`)
   findings. Pre-existing, autofixable, untouched so far.
+- **The `'Todos'` sentinel needs the CAST on the COLUMN side.** `fila.sql`
+  filters `WHERE :vendedor_id = 'Todos' OR CAST(f.vendedor_id AS STRING) =
+  :vendedor_id`. Comparing the INT column directly against the STRING parameter
+  makes DBSQL cast `'Todos'` to a number and **abort** with
+  `CAST_INVALID_INPUT` — the `OR` does **not** short-circuit. Verified by
+  running both forms. `npm run typegen` will never catch this: `DESCRIBE QUERY`
+  parses the statement without executing it, so the query types cleanly and
+  then explodes at runtime.
+- **The warehouse sends every number as a STRING over JSON**, even where the
+  generated type says `number` — the type describes the column, the transport
+  delivers text. `"556423.71".toLocaleString('pt-BR')` returns the string
+  unchanged and `"7" + "12"` is `"712"`. Everything goes through
+  `client/src/lib/formato.ts:num()` before being formatted or summed.
+- **`npm run typegen` degrades to `OFFLINE` on a cold warehouse** and writes
+  `{}` types, which breaks `tsc` far from the cause. Start the warehouse first;
+  if the first call still degrades, `npm run typegen -- --wait` blocks instead
+  of degrading. The generator never overwrites good committed types with
+  degraded ones.
+- **`shared/appkit-types/` is generated and marked DO NOT EDIT** — it is in
+  `eslint.config.js`'s ignore list, because linting a file the toolchain
+  rewrites every build produces errors nobody can fix.
+- **The scaffold's own `App.tsx` fails `appkit lint`**: it syncs the mobile nav
+  with `useEffect` (`react-hooks/set-state-in-effect`). Render the `Sheet` only
+  when `isMobile` — unmounting takes the state with it, so there is nothing to
+  sync. Treat `apps init` output as starter code, not as requirements.
+- **Two salespeople share a name inside `fila_semanal`** (36 by `vendedor_id`,
+  35 by name). The app's vendor filter keys on `vendedor_id` and `vendedores.sql`
+  appends the id to the label when a name repeats — otherwise the dropdown shows
+  two visually identical options (`Henrique Oliveira`, ids 34 and 36, five
+  contacts each).
+- **`useAnalyticsQuery` has no `refetch`** — it returns
+  `{data, loading, error, errorCode, warehouseStatus}` and nothing else. The only
+  lever to re-run a query is remounting its caller, so `SemanaPage` keeps the
+  filter, the typed comments and a `recarga` counter in the parent and remounts
+  the child with `key={recarga}` after each write. **Do not fake a cache-busting
+  SQL parameter** (`:recarga >= 0`): a browser still holding the previous JS
+  sends the query without it and the warehouse rejects with
+  `UNBOUND_SQL_PARAMETER` — the screen breaks itself after a deploy.
+- **Query caching can only be turned off at the top of `createApp`.**
+  `analytics({ cache: { enabled: false } })` **typechecks and is silently
+  ignored** — `IAnalyticsConfig` has no `cache` key, and the plugin hardcodes
+  `{ enabled: true, ttl: 3600 }` without ever reading its config. Without
+  `createApp({ cache: { enabled: false } })` the app would serve hour-old rows
+  after someone clicks.
+- **`npm run dev` does not work in this template on Windows.** The script is
+  `NODE_ENV=development tsx watch …` and npm runs it through `cmd.exe`:
+  `'NODE_ENV' não é reconhecido`. Run the binary directly from Git Bash:
+  `NODE_ENV=development npx tsx --tsconfig ./tsconfig.server.json
+  --env-file-if-exists=./.env ./server/server.ts`. Local dev authenticates with
+  the profile in `.env` and has **no OAuth headers**, so `registrado_por` falls
+  back to the dev value — that is expected, not a bug.
+- **The AppKit execution-context docs are stale.** They describe
+  `getCurrentUserId()`, `getWarehouseId()` and `getWorkspaceId()`, none of which
+  are exported. `getWorkspaceClient()` *is* exported but comes from the
+  **Lakebase** connector, not the context — using it is a silent trap. Trust the
+  `.d.ts`, not the prose. The `ExecutionContext` type itself is not exported.
 - Prefer Volumes over DBFS: a Volume is a UC object with an owner, permissions,
   and lineage.
 - There is no `.gitignore` at the repo root — only inside each bundle. Editor and

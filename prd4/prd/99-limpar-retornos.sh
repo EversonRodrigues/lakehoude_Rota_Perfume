@@ -40,5 +40,5 @@ sql "SELECT (SELECT COUNT(*) FROM $CATALOGO.gold.retorno_ligacao) AS retornos_ag
 
 echo
 echo "Pronto: retornos zerados, os 200 da fila intactos."
-echo "No app, clique em Atualizar (aba Acompanhamento) ou recarregue a página —"
-echo "a leitura é cacheada e a tela pode mostrar o número antigo por alguns segundos."
+echo "No app, recarregue a página: o cache de leitura está DESLIGADO"
+echo "(cache: { enabled: false } no createApp), então a tela volta a zero na hora."

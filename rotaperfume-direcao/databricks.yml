@@ -1,0 +1,46 @@
+bundle:
+  name: rotaperfume-direcao
+
+variables:
+  sql_warehouse_id:
+    description: SQL Warehouse ID
+  genie_space_id:
+    description: Default Genie Space ID
+  genie_space_name:
+    description: Genie Space display name
+
+resources:
+  apps:
+    app:
+      name: 'rotaperfume-direcao'
+      description: 'A fila dos 200 na tela do diretor'
+      source_code_path: ./
+
+      # Start the app automatically on deploy.
+      lifecycle:
+        started: true
+      user_api_scopes:
+        - dashboards.genie
+
+      # The resources which this app has access to.
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.sql_warehouse_id}
+            permission: CAN_USE
+        - name: genie-space
+          genie_space:
+            name: ${var.genie_space_name}
+            space_id: ${var.genie_space_id}
+            permission: CAN_RUN
+
+targets:
+  default:
+    default: true
+    workspace:
+      host: https://dbc-73ba6d88-0c16.cloud.databricks.com
+
+    variables:
+      sql_warehouse_id: 47307f0445a667ac
+      genie_space_id: 01f1b1837d96157089e210074db81dea
+      genie_space_name: Rota Perfume · Direção
