@@ -25,6 +25,15 @@
 #                                motivo em portugues e o que oferecer -- mais as
 #                                quatro funcoes que o agente consulta
 #
+# NOITE 4 -- o caminho de VOLTA, e a regra de metadado virando tarefa:
+#   9. gold_retorno_ligacao   [feito] entrega 9: gold.retorno_ligacao, a unica
+#                                tabela alimentada pelo TIME e nao pelo
+#                                pipeline -- por isso IF NOT EXISTS, e por isso
+#                                nasce vazia
+#  10. auditoria_de_metadado  [feito] entrega 9: quebra o job se qualquer
+#                                tabela ou coluna da gold estiver sem COMMENT.
+#                                E o COMMENT que o Genie le para escolher coluna
+#
 # Cada tarefa nova entra com `depends_on` na anterior: nada de bronze antes da
 # conferencia dizer que o arquivo chegou, nada de silver antes da bronze existir.
 #
@@ -161,6 +170,22 @@ resources:
               source: WORKSPACE
             warehouse_id: ${var.warehouse_id}
 
+        # NOITE 4 -- o caminho de VOLTA. Sai de gold_marts e nao do bloco de ML
+        # de proposito: o app precisa da tabela existindo mesmo num dia em que o
+        # modelo falhe. Roda em paralelo com `testes`.
+        - task_key: gold_retorno_ligacao
+          description: >-
+            Cria gold.retorno_ligacao, onde o time registra o que aconteceu
+            depois da ligacao. CREATE TABLE IF NOT EXISTS: e a unica tabela cujo
+            dado nao vem do pipeline, e redeploy nao pode apagar resposta.
+          depends_on:
+            - task_key: gold_marts
+          sql_task:
+            file:
+              path: ../src/gold/12-retorno-ligacao.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
         # Por ultimo, e obrigatorio. Teste que nao quebra o job e relatorio.
         # Quando esta tarefa fica vermelha, o dashboard fica com o dado de
         # ontem -- melhor que ficar com o dado errado de hoje.
@@ -219,6 +244,23 @@ resources:
           sql_task:
             file:
               path: ../src/ml/11-fila.sql
+              source: WORKSPACE
+            warehouse_id: ${var.warehouse_id}
+
+        # A ULTIMA tarefa do job, depois de tudo estar criado -- so assim ela
+        # enxerga fila_semanal e retorno_ligacao. Metadado faltando e BUG, nao
+        # pendencia de documentacao: sem COMMENT o Genie escolhe a coluna errada
+        # e o dashboard mostra um nome que ninguem sabe o que significa.
+        - task_key: auditoria_de_metadado
+          description: >-
+            Varre o information_schema e QUEBRA o job se alguma tabela ou coluna
+            da gold estiver sem COMMENT. A mensagem de erro nomeia tabela.coluna.
+          depends_on:
+            - task_key: ml_fila
+            - task_key: gold_retorno_ligacao
+          sql_task:
+            file:
+              path: ../src/gold/13-auditoria-metadado.sql
               source: WORKSPACE
             warehouse_id: ${var.warehouse_id}
 

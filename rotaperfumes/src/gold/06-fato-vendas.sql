@@ -111,3 +111,5 @@ ALTER TABLE lakehouse_rotaperfume.gold.fato_vendas ALTER COLUMN cidade
   COMMENT 'Cidade do cliente.';
 ALTER TABLE lakehouse_rotaperfume.gold.fato_vendas ALTER COLUMN uf
   COMMENT 'UF do cliente.';
+ALTER TABLE lakehouse_rotaperfume.gold.fato_vendas ALTER COLUMN _processado_em
+  COMMENT 'Momento em que esta linha foi (re)gerada pelo pipeline. Metadado tecnico, nunca metrica de negocio.';

@@ -51,7 +51,7 @@ The course script itself targets a third workspace (`dbc-84cd5511-fa25`, profile
 `projeto-dados-ia`, warehouse `666be37e3fededf2`) that this checkout does not
 have — treat those values as illustrative, never copy them.
 
-## Current state — deliverables 1 and 2 are done in `rotaperfumes/`
+## Current state — nights 1 to 4 (prompt 1) are done in `rotaperfumes/`
 
 Built and verified end-to-end against the `rotaperfumes` workspace. Each
 deliverable has a course script in `.llm/prompt_0N.md` — `prompt_01.md` came with
@@ -96,7 +96,7 @@ actually fire, change the Volume and run the second task alone:
   `gold_marts` → `testes`) — **chained**, unlike the parallel silver tasks. Four
   conformed dimensions, `fato_vendas` at **item-of-order grain** (191,080 rows),
   three marts over that one fact, and 9 tests. The gold reads **only from
-  silver**, never bronze. 10 tasks total in the job.
+  silver**, never bronze. **15 tasks total in the job** after night 4.
 - `src/ml/09-features.py` (task `ml_features`, `depends_on` `testes`) — night 3's
   first deliverable. One `montar_features(referencia)` builds 20 features per
   client from data strictly **before** a cutoff date passed as a parameter, and
@@ -124,6 +124,30 @@ actually fire, change the Volume and run the second task alone:
   the bundle, not clicked. 14 widgets over a **single** dataset `ds_vendas`, with
   the KPIs declared once as dataset `columns` and referenced via
   ``MEASURE(`Receita`)``.
+- `src/gold/12-retorno-ligacao.sql` (task `gold_retorno_ligacao`, `depends_on`
+  `gold_marts`) — night 4's first deliverable, the **return path**. Three nights
+  built the way out (file → model → the 200 calls) and the pipeline never learned
+  what happened next. `gold.retorno_ligacao` is the only table in the project fed
+  by the *team* rather than the pipeline, which is why it is the only
+  `CREATE TABLE IF NOT EXISTS` — a redeploy must not erase what a salesperson
+  answered. It is born **empty**, and empty is the correct state. It hangs off
+  `gold_marts`, not off the ML block, so the app still has its table on a day the
+  model fails.
+- `src/gold/13-auditoria-metadado.sql` (task `auditoria_de_metadado`, **last in
+  the DAG**) — raises if any gold table or column has no `COMMENT`, naming
+  `tabela.coluna` in the error. Landing it required backfilling **65 missing
+  column comments** across `05`, `06`, `07` and `11`.
+- `resources/genie-direcao.genie_space.yml` + `resources/direcao.geniespace.json`
+  (resource `genie_spaces.genie_direcao`) — the **second** Genie space,
+  `Rota Perfume · Direção`, deployed by the bundle. Same model, same data as the
+  comercial one; what differs is the audience, and the audience lives in ~20
+  lines of business instruction under Git. Five sources (`fila_semanal`,
+  `score_propensao`, `modelo_metricas`, `retorno_ligacao`, `dim_cliente`), five
+  sample questions, five validated question→SQL pairs, one `text_instructions`.
+  Its hard rules: expected queue revenue is `SUM(score * ticket_medio)` and is an
+  **estimate**; the director's metric is `lift_top200` and it must **never** cite
+  AUC; zero returns means "nobody has registered one yet", never the queue used
+  as if it were a result.
 
 **Layer doctrine, enforced by the code:** raw is a file, bronze is a table, and
 bronze is the data *as it arrived* — `cnpj` keeps its surrounding spaces
@@ -304,12 +328,37 @@ if no compute is configured. There is no way to run the suite offline.
 - **`LIMIT` cannot take a function parameter** — `LIMIT p_quantos` fails with
   `INVALID_LIMIT_LIKE_EXPRESSION.IS_UNFOLDABLE`. Filter on a precomputed rank
   column instead.
-- **Genie is not a DABs resource type.** The space is created by
-  `databricks genie create-space` and its payload lives in
-  `resources/genie-comercial.json` for versioning. The `serialized_space` schema
-  needs 32-hex `id`s, array-valued text fields, and at most **one**
-  `text_instructions` entry. Run workspace/Genie path commands from **PowerShell**
-  — Git Bash rewrites `/Users/...` into a Windows path.
+- **Genie IS a DABs resource type — as of CLI v1.14.0.** `resources.genie_spaces`
+  takes a `file_path` pointing at a `.geniespace.json`, plus `title`,
+  `description`, `warehouse_id` and `parent_path`. `databricks bundle generate
+  genie-space --existing-id … --key …` round-trips a UI-built space into the
+  bundle. **The two spaces in this repo are managed differently, on purpose:**
+  the *comercial* one predates this and is still CLI-created
+  (`databricks genie create-space`, payload in `resources/genie-comercial.json`,
+  not a bundle resource); the *direção* one is a bundle resource
+  (`resources/genie-direcao.genie_space.yml` + `resources/direcao.geniespace.json`,
+  key `genie_direcao`). Renaming a bundle resource key deletes and recreates the
+  space with a **new id and URL**, and the app embeds that id — never rename it.
+  `parent_path` is immutable and must exist before the first deploy
+  (`databricks workspace mkdirs`).
+- **The `serialized_space` schema has four rules that fail the deploy.**
+  32-hex lowercase `id`s unique across *all three* lists combined; every text
+  field is an **array of strings**; at most **one** `text_instructions` entry;
+  and sort order matters — `data_sources.tables` by `identifier`, each
+  `column_configs` by `column_name`, `example_question_sqls` and
+  `text_instructions` by `id`. Ids here are **md5 of the content**, so a redeploy
+  produces a byte-identical file instead of churning the diff. Run
+  workspace/Genie path commands from **PowerShell** — Git Bash rewrites
+  `/Users/...` into a Windows path.
+- **Every column in `gold` must carry a `COMMENT`, and a task enforces it.**
+  `src/gold/13-auditoria-metadado.sql` (task `auditoria_de_metadado`, the last in
+  the DAG) raises on any gold table or column with an empty comment. Adding a
+  column to a gold table without a comment turns the pipeline red. Column
+  comments go in `ALTER TABLE … ALTER COLUMN … COMMENT` after the CTAS — a
+  `CREATE OR REPLACE TABLE … AS SELECT` cannot carry them inline, and it **wipes
+  them on every run**, which is why the ALTERs live in the same file. Silver
+  (97 columns) and bronze (106) are deliberately out of scope: bronze is the data
+  as it arrived, and silver is the next debt to pay.
 - `tests/conftest.py` ships from the template with two unsorted-import (`I001`)
   findings. Pre-existing, autofixable, untouched so far.
 - Prefer Volumes over DBFS: a Volume is a UC object with an owner, permissions,

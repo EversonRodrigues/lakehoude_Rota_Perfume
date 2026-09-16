@@ -1,0 +1,29 @@
+# O SEGUNDO Genie space -- o da direcao -- como CODIGO.
+#
+# POR QUE UM SEGUNDO, com o mesmo dado embaixo? Porque Genie nao e um por
+# empresa, e um por AUDIENCIA. O vendedor pergunta "quanto o cliente X comprou
+# no ano"; o diretor pergunta "quanto vale a fila". Se os dois moram no mesmo
+# espaco, as instrucoes brigam: o que serve para um vira ruido para o outro.
+#
+# O modelo e o mesmo, o dado e o mesmo. O que faz este responder melhor para o
+# diretor sao as instrucoes de negocio em direcao.geniespace.json -- e elas
+# moram no Git, com diff, revisao e historico.
+#
+# O space da noite 2 (`Rota Perfume - Comercial`) NAO e recurso deste bundle:
+# foi criado pela CLI e seu payload esta em resources/genie-comercial.json.
+# Este aqui e recurso, entao a chave `genie_direcao` NAO PODE ser renomeada --
+# trocar a chave faz o bundle apagar e recriar o space, com URL nova. O id
+# deste space e o que o app da noite 4 embute; leia com `bundle summary`.
+#
+# `parent_path` e imutavel: muda-lo recria o recurso. A pasta precisa EXISTIR
+# antes do primeiro deploy (databricks workspace mkdirs).
+resources:
+  genie_spaces:
+    genie_direcao:
+      title: Rota Perfume · Direção
+      description: >-
+        A fila da semana lida pela otica de quem decide: quanto ela vale, quanto
+        o modelo ganha de ligar as cegas e o que aconteceu depois da ligacao.
+      warehouse_id: ${var.warehouse_id}
+      parent_path: /Workspace/Users/everson101288@gmail.com/genie
+      file_path: ./direcao.geniespace.json

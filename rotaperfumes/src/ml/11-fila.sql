@@ -157,6 +157,14 @@ ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN sugestao
   COMMENT 'O que oferecer: o SKU mais comprado na marca preferida que o cliente nao leva ha 90 dias, com o saldo do ultimo snapshot daquele SKU.';
 ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN score
   COMMENT 'Probabilidade de compra nos proximos 7 dias, vinda de gold.score_propensao.';
+ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN cliente_id
+  COMMENT 'Cliente a ligar. E a chave que liga esta fila a gold.retorno_ligacao, onde o time registra o que aconteceu depois.';
+ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN cidade
+  COMMENT 'Cidade do cliente, para o vendedor se situar antes de ligar. Grafia livre na origem -- para agrupar, use uf.';
+ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN uf
+  COMMENT 'UF do cliente. E o corte geografico confiavel da fila.';
+ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN _gerada_em
+  COMMENT 'Momento em que a fila foi montada. Identifica a SEMANA da fila e casa com gold.retorno_ligacao._referencia. Metadado tecnico, nunca metrica de negocio.';
 
 -- =========================================================================
 -- AS QUATRO FERRAMENTAS

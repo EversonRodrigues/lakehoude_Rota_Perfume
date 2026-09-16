@@ -1,0 +1,154 @@
+{
+  "version": 2,
+  "config": {
+    "sample_questions": [
+      {
+        "id": "1e2d3d94197e0bf4e5645b0154fed95f",
+        "question": [
+          "Quanto vale a fila desta semana?"
+        ]
+      },
+      {
+        "id": "29fc6038df7c98010c3e8ef4e185bbf7",
+        "question": [
+          "Quantas ligacoes ja foram registradas e quantas viraram pedido?"
+        ]
+      },
+      {
+        "id": "33236792b712294b8b609b01ba14614b",
+        "question": [
+          "Quem eu ligo essa semana?"
+        ]
+      },
+      {
+        "id": "5827917af868a21ec31d407b0911563b",
+        "question": [
+          "Qual a nota de um cliente que nao esta na fila?"
+        ]
+      },
+      {
+        "id": "6a66127d4579f8fdc4273751053e31ff",
+        "question": [
+          "O modelo e bom?"
+        ]
+      }
+    ]
+  },
+  "data_sources": {
+    "tables": [
+      {
+        "identifier": "lakehouse_rotaperfume.gold.dim_cliente"
+      },
+      {
+        "identifier": "lakehouse_rotaperfume.gold.fila_semanal"
+      },
+      {
+        "identifier": "lakehouse_rotaperfume.gold.modelo_metricas"
+      },
+      {
+        "identifier": "lakehouse_rotaperfume.gold.retorno_ligacao"
+      },
+      {
+        "identifier": "lakehouse_rotaperfume.gold.score_propensao"
+      }
+    ]
+  },
+  "instructions": {
+    "example_question_sqls": [
+      {
+        "id": "042559354e21d60594a0f52b87c616ee",
+        "question": [
+          "Qual a nota de um cliente que nao esta na fila?"
+        ],
+        "sql": [
+          "-- score_propensao tem TODOS os clientes, nao so os 200 da fila.\n",
+          "SELECT d.razao_social, d.cidade, d.uf,\n",
+          "       ROUND(s.score, 3) AS score,\n",
+          "       s.faixa,\n",
+          "       CASE WHEN f.cliente_id IS NOT NULL THEN 'sim' ELSE 'nao' END AS na_fila_desta_semana\n",
+          "FROM   lakehouse_rotaperfume.gold.score_propensao s\n",
+          "JOIN   lakehouse_rotaperfume.gold.dim_cliente d       ON d.cliente_id = s.cliente_id\n",
+          "LEFT   JOIN lakehouse_rotaperfume.gold.fila_semanal f ON f.cliente_id = s.cliente_id\n",
+          "WHERE  lower(d.razao_social) LIKE lower('%Serena%')\n",
+          "ORDER  BY s.score DESC"
+        ]
+      },
+      {
+        "id": "a000d0af9077f8887621b46aa0982d97",
+        "question": [
+          "Quantas ligacoes ja foram registradas e quantas viraram pedido?"
+        ],
+        "sql": [
+          "-- Um cliente pode ter mais de um retorno: o estado atual e o mais recente.\n",
+          "WITH ultimo AS (\n",
+          "  SELECT cliente_id, status\n",
+          "  FROM   lakehouse_rotaperfume.gold.retorno_ligacao\n",
+          "  QUALIFY ROW_NUMBER() OVER (PARTITION BY cliente_id ORDER BY registrado_em DESC) = 1\n",
+          ")\n",
+          "SELECT COUNT(*)                    AS clientes_com_retorno,\n",
+          "       COUNT_IF(status = 'vendeu') AS viraram_pedido\n",
+          "FROM   ultimo"
+        ]
+      },
+      {
+        "id": "a3336446db67206cef89cf29586cc32b",
+        "question": [
+          "Quem eu ligo essa semana?"
+        ],
+        "sql": [
+          "SELECT vendedor, ordem, razao_social, cidade, uf,\n",
+          "       ROUND(score, 2) AS score, faixa, motivo, sugestao\n",
+          "FROM   lakehouse_rotaperfume.gold.fila_semanal\n",
+          "ORDER  BY vendedor_id, ordem"
+        ]
+      },
+      {
+        "id": "d7b66c72c0f56d39205beb285fe0d5df",
+        "question": [
+          "O modelo e bom?"
+        ],
+        "sql": [
+          "-- A metrica da direcao e lift_top200. NUNCA responda isto com AUC.\n",
+          "SELECT versao,\n",
+          "       ROUND(lift_top200, 2)     AS lift_top200,\n",
+          "       acertos_top200,\n",
+          "       ROUND(taxa_base * 100, 2) AS taxa_base_pct\n",
+          "FROM   lakehouse_rotaperfume.gold.modelo_metricas\n",
+          "QUALIFY ROW_NUMBER() OVER (ORDER BY versao DESC) = 1"
+        ]
+      },
+      {
+        "id": "f981713e4409c585030520be64b01661",
+        "question": [
+          "Quanto vale a fila desta semana?"
+        ],
+        "sql": [
+          "-- ESTIMATIVA, nunca receita realizada: score e probabilidade, nao venda.\n",
+          "SELECT COUNT(*)                            AS contatos,\n",
+          "       COUNT(DISTINCT vendedor_id)         AS vendedores,\n",
+          "       ROUND(SUM(score * ticket_medio), 2) AS receita_esperada_estimada\n",
+          "FROM   lakehouse_rotaperfume.gold.fila_semanal"
+        ]
+      }
+    ],
+    "text_instructions": [
+      {
+        "id": "87b813c3283f1d201172c4f0c5cd2e48",
+        "content": [
+          "QUEM PERGUNTA AQUI: a direcao comercial da Rota Perfume. Nao escreve SQL, nao treina modelo, e decide ligacao. Responda em portugues do Brasil, com o numero na frente e a explicacao depois, em no maximo tres frases.\n",
+          "O SCORE e a probabilidade estimada de o cliente comprar nos proximos 7 dias, entre 0 e 1. A faixa traduz o score em quartil (Fria, Morna, Quente, Muito quente) para conversar sem falar em probabilidade. A ordem e a sequencia de ligacao dentro da carteira de cada vendedor, do maior score para o menor. O motivo e a frase pronta que explica por que aquele cliente entrou na fila.\n",
+          "A FILA E GLOBAL, e isso esta CERTO: sao os 200 melhores scores da base inteira, nao uma cota igual por vendedor. Quem tem carteira quente recebe mais contatos. Se perguntarem por que um vendedor tem mais ligacoes que outro, a resposta e essa -- a capacidade e por pessoa, a prioridade e da empresa.\n",
+          "RECEITA ESPERADA DA FILA = SUM(score * ticket_medio) sobre gold.fila_semanal. Use SEMPRE a palavra estimativa ao dar esse numero. Nao e receita realizada, nao e pedido fechado e nao e meta: e a soma das probabilidades multiplicada pelo ticket historico de cada cliente.\n",
+          "A METRICA DA DIRECAO E lift_top200 -- quantas vezes a fila do modelo converte mais que ligar as cegas. Acompanhe com acertos_top200 (quantos dos 200 compraram) e taxa_base (a conversao de quem liga sem modelo). NUNCA cite AUC para responder pergunta de negocio, e NUNCA use as colunas auc, auc_baseline_atraso, auc_baseline_recencia, auc_baseline_valor ou melhor_baseline_auc numa resposta: AUC e metrica de quem treina modelo, nao de quem decide ligacao. Quando perguntarem se o modelo e bom, responda com lift_top200 e acertos_top200.\n",
+          "Em gold.modelo_metricas ha uma linha por versao treinada. Use SEMPRE a mais recente: QUALIFY ROW_NUMBER() OVER (ORDER BY versao DESC) = 1.\n",
+          "gold.retorno_ligacao COMECA VAZIA. Se a contagem der zero, diga exatamente que ninguem registrou retorno de ligacao ainda -- nao invente numero, nao estime e NUNCA use gold.fila_semanal como se fosse retorno. Fila e quem a gente pretende ligar; retorno e o que aconteceu depois. Sao coisas diferentes, e a fila nao responde nada sobre resultado.\n",
+          "Um cliente pode ter MAIS DE UM retorno ao longo do tempo. Para o estado atual, pegue sempre o mais recente por registrado_em: QUALIFY ROW_NUMBER() OVER (PARTITION BY cliente_id ORDER BY registrado_em DESC) = 1. Conversao e status = 'vendeu'. Os outros status possiveis sao vai_pensar, sem_interesse e nao_atendeu.\n",
+          "NUNCA agrupe metrica por nome de vendedor. Nomes se repetem nesta base (ha dois Henrique Oliveira e dois Vinicius Lopes), e agrupar por nome funde duas carteiras numa linha so. Agrupe por vendedor_id e use o nome apenas para exibir.\n",
+          "gold.score_propensao tem TODOS os clientes da base, nao so os 200 da fila -- e onde procurar quando perguntarem sobre um cliente especifico que nao esta na lista da semana. gold.dim_cliente serve para achar esse cliente pela razao social; a fila so traz o nome dos 200.\n",
+          "A SAZONALIDADE DO SETOR E INVERTIDA: o pico de venda e o mes ANTERIOR a data comemorativa, porque o lojista compra antes para vender na data. Abril, junho e outubro sao os meses de pico (Dia das Maes, Namorados e a virada para o Natal). Nunca explique uma queda em maio como perda de demanda sem considerar isso.\n",
+          "NUNCA use o schema bronze: la o dado esta como chegou, com tudo em texto e sem limpeza. Responda apenas a partir das tabelas do schema gold listadas como fonte."
+        ]
+      }
+    ]
+  }
+}
