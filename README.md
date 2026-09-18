@@ -176,6 +176,45 @@ databricks bundle run rotaperfume_pipeline --target dev --profile meu-perfil
 Um job novo em máquina fria leva alguns minutos; quente, cerca de 2min30 para as
 primeiras tarefas. **Acorde o warehouse antes de uma demonstração.**
 
+<details>
+<summary><strong>Quanto demora cada tarefa</strong> — execução completa, 15 de 15 verdes, <strong>9min35</strong></summary>
+
+| # | tarefa | duração |
+|---|---|---|
+| 1 | `raw_conferencia` | 23s |
+| 2 | `bronze_ingestao` | 63s |
+| 3 | `silver_clientes` | 23s |
+| 4 | `silver_pedidos` | 21s |
+| 5 | `silver_itens_produtos` | 32s |
+| 6 | `silver_crm_financeiro` | 49s |
+| 7 | `gold_dimensoes` | 56s |
+| 8 | `gold_fato_vendas` | 32s |
+| 9 | `gold_marts` | 52s |
+| 10 | `gold_retorno_ligacao` | 2s |
+| 11 | `testes` | 10s |
+| 12 | `ml_features` | 87s |
+| 13 | `ml_modelo` | **146s** |
+| 14 | `ml_fila` | 30s |
+| 15 | `auditoria_de_metadado` | 2s |
+
+Três coisas que esses números contam:
+
+- **A soma das 15 tarefas é 10min28, e o relógio marcou 9min35.** A diferença é
+  paralelismo: as quatro `silver_*` rodam juntas e custam o tempo da mais lenta
+  (49s), não a soma (125s). As de gold são encadeadas de propósito.
+- **O caminho crítico é 9min10** (`raw` → `bronze` → `silver_crm_financeiro` →
+  `gold_dimensoes` → `gold_fato_vendas` → `gold_marts` → `testes` →
+  `ml_features` → `ml_modelo` → `ml_fila` → `auditoria`). Sobram ~25s de
+  orquestração e cold start — pouco, porque o job já estava quente. **Frio, é
+  essa folga que vira minutos**, e é ela que aparece numa demonstração.
+- **`ml_modelo` sozinho é um quarto do tempo.** Ele treina três candidatos, e as
+  duas calibragens são cinco fits internos cada, mais a validação cruzada do
+  `lift_top200`. É o preço de escolher a calibragem por medida em vez de por
+  opinião — e, no lugar certo, vale: foi o que tirou 30% de otimismo da receita
+  esperada.
+
+</details>
+
 Para rodar **uma tarefa só** — útil quando você mexeu num `.sql` e não quer
 pagar o DAG inteiro, ou para ver um teste falhar de propósito:
 
