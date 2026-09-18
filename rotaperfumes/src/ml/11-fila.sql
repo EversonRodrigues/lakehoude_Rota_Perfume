@@ -30,6 +30,7 @@ elegivel AS (
     s.cliente_id,
     s.score,
     s.faixa,
+    s.vezes_base,
     d.razao_social,
     d.cidade,
     d.uf,
@@ -75,9 +76,21 @@ marca_preferida AS (
 -- O SKU mais comprado na marca preferida que ele NAO comprou nos ultimos 90
 -- dias. E a diferenca entre "sugestao" e "lista de produtos".
 sugestao AS (
-  SELECT cliente_id, sku, saldo FROM (
+  SELECT cliente_id, sku, saldo, disponivel FROM (
     SELECT fv.cliente_id, fv.sku, ea.saldo,
-           ROW_NUMBER() OVER (PARTITION BY fv.cliente_id ORDER BY SUM(fv.quantidade) DESC, fv.sku) AS pos
+           COALESCE(ea.saldo, 0) > 0 AND NOT COALESCE(ea.ruptura, FALSE) AS disponivel,
+           -- DISPONIBILIDADE PRIMEIRO, volume depois. Este ORDER BY ja ordenou
+           -- so por SUM(quantidade), e era um bug de negocio com cara de detalhe
+           -- tecnico: o SKU mais comprado vencia mesmo com saldo zero, o saldo
+           -- so era olhado DEPOIS, no CASE la embaixo, e a fila saia mandando
+           -- oferecer o que o estoque nao tem. Filtro de disponibilidade em
+           -- WHERE seria pior: deixaria o cliente sem nenhuma sugestao em vez de
+           -- mostrar a segunda melhor opcao que existe no deposito.
+           ROW_NUMBER() OVER (
+             PARTITION BY fv.cliente_id
+             ORDER BY (COALESCE(ea.saldo, 0) > 0 AND NOT COALESCE(ea.ruptura, FALSE)) DESC,
+                      SUM(fv.quantidade) DESC,
+                      fv.sku) AS pos
     FROM lakehouse_rotaperfume.gold.fato_vendas fv
     JOIN marca_preferida mp ON mp.cliente_id = fv.cliente_id AND mp.marca = fv.marca
     LEFT JOIN estoque_atual ea ON ea.sku = fv.sku
@@ -86,7 +99,7 @@ sugestao AS (
       WHERE r.cliente_id = fv.cliente_id AND r.sku = fv.sku
         AND r.data_pedido >= DATE'2026-08-31' - INTERVAL 90 DAYS
     )
-    GROUP BY fv.cliente_id, fv.sku, ea.saldo
+    GROUP BY fv.cliente_id, fv.sku, ea.saldo, ea.ruptura
   ) WHERE pos = 1
 )
 SELECT
@@ -105,6 +118,9 @@ SELECT
   q.uf,
   q.score,
   q.faixa,
+  -- A faixa nunca viaja sozinha: 0,45 so quer dizer alguma coisa ao lado de
+  -- "4,4x a chance media da base".
+  q.vezes_base,
   q.ticket_medio,
   -- O motivo em portugues nao e enfeite: e o que faz o vendedor confiar quando
   -- o modelo acerta, e entender POR QUE quando ele erra -- em vez de
@@ -135,11 +151,15 @@ SELECT
       'Comprou lancamento recente. Alta chance de repetir.'
     ELSE 'Dentro do ritmo. Contato de manutencao.'
   END                                        AS motivo,
+  -- A palavra 'Oferecer' so aparece quando ha saldo. Quando nao ha, o texto nao
+  -- manda oferecer coisa nenhuma: diz que nao ha o que oferecer da marca
+  -- preferida. Um aviso no fim da frase nao segura ninguem -- o vendedor le o
+  -- verbo, liga e promete.
   CASE
     WHEN sg.sku IS NULL THEN 'Sem sugestao: ja comprou tudo da marca preferida nos ultimos 90 dias.'
-    WHEN sg.saldo IS NULL THEN concat('Oferecer ', sg.sku, ' (sem snapshot de estoque recente).')
-    WHEN sg.saldo = 0 THEN concat('Oferecer ', sg.sku, ' -- ATENCAO: saldo zerado, confira antes de prometer.')
-    ELSE concat('Oferecer ', sg.sku, ' (', CAST(sg.saldo AS STRING), ' em estoque).')
+    WHEN sg.disponivel THEN concat('Oferecer ', sg.sku, ' (', CAST(sg.saldo AS STRING), ' em estoque).')
+    WHEN sg.saldo IS NULL THEN concat('Sem sugestao com estoque confirmado. O mais proximo e ', sg.sku, ', sem snapshot recente -- confira antes de prometer.')
+    ELSE concat('Sem sugestao com estoque: nada da marca preferida tem saldo hoje. O mais proximo e ', sg.sku, ', zerado ou em ruptura.')
   END                                        AS sugestao,
   current_timestamp()                        AS _gerada_em
 FROM duzentos q
@@ -155,6 +175,8 @@ ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN motivo
   COMMENT 'Frase em portugues explicando por que o cliente esta na fila, com os numeros reais dele. Nunca nula.';
 ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN sugestao
   COMMENT 'O que oferecer: o SKU mais comprado na marca preferida que o cliente nao leva ha 90 dias, com o saldo do ultimo snapshot daquele SKU.';
+ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN vezes_base
+  COMMENT 'Quantas vezes a chance deste cliente supera a taxa base (a conversao de quem liga sem modelo). E o denominador da faixa: sem ele, um score de 0,45 parece pouco.';
 ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN score
   COMMENT 'Probabilidade de compra nos proximos 7 dias, vinda de gold.score_propensao.';
 ALTER TABLE lakehouse_rotaperfume.gold.fila_semanal ALTER COLUMN cliente_id
@@ -243,7 +265,7 @@ RETURN
   GROUP BY e.sku;
 
 -- =========================================================================
--- OS TRES TESTES QUE QUEBRAM O JOB
+-- OS QUATRO TESTES QUE QUEBRAM O JOB
 -- =========================================================================
 
 SELECT 'teste 1 · a fila tem exatamente 200 linhas'                  AS teste,
@@ -266,3 +288,24 @@ SELECT 'teste 3 · score dentro de [0,1]'                             AS teste,
             ELSE raise_error(concat(fora, ' linhas com score fora do intervalo [0,1]')) END AS resultado
 FROM (SELECT COUNT(*) AS fora FROM lakehouse_rotaperfume.gold.fila_semanal
       WHERE score < 0 OR score > 1);
+
+-- O teste que prende a correcao da sugestao. Enquanto o ROW_NUMBER ordenava so
+-- por volume, esta contagem era diferente de zero: a fila mandava oferecer SKU
+-- sem saldo. Nunca relaxe este teste para o job ficar verde -- a sugestao com
+-- estoque zerado nao e um alarme falso, e uma promessa que o deposito nao paga.
+SELECT 'teste 4 · nenhuma sugestao manda oferecer SKU sem saldo'     AS teste,
+       oferece_sem_saldo AS calculado, 0 AS esperado,
+       CASE WHEN oferece_sem_saldo = 0 THEN 'PASSOU'
+            ELSE raise_error(concat(oferece_sem_saldo,
+                 ' linhas mandam oferecer um SKU sem estoque. A disponibilidade tem que entrar no ORDER BY do ROW_NUMBER, nao so no CASE do texto.')) END AS resultado
+FROM (
+  SELECT COUNT(*) AS oferece_sem_saldo
+  FROM lakehouse_rotaperfume.gold.fila_semanal f
+  JOIN (
+    SELECT e.sku, e.saldo, e.ruptura
+    FROM lakehouse_rotaperfume.silver.estoque e
+    JOIN (SELECT sku, MAX(data_snapshot) AS d FROM lakehouse_rotaperfume.silver.estoque GROUP BY sku) u
+      ON u.sku = e.sku AND u.d = e.data_snapshot
+  ) ea ON f.sugestao LIKE concat('Oferecer ', ea.sku, '%')
+  WHERE ea.saldo <= 0 OR ea.ruptura
+);

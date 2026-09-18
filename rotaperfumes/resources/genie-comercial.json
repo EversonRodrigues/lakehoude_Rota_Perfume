@@ -2,46 +2,112 @@
   "version": 2,
   "config": {
     "sample_questions": [
-      { "id": "10000000000000000000000000000001", "question": ["Quem eu ligo essa semana?"] },
-      { "id": "10000000000000000000000000000002", "question": ["Por que esse cliente esta no topo da minha lista?"] },
-      { "id": "10000000000000000000000000000003", "question": ["Quantas ligacoes cada vendedor recebeu essa semana?"] },
-      { "id": "10000000000000000000000000000004", "question": ["Tem estoque do SKU00042?"] }
+      {
+        "id": "10000000000000000000000000000001",
+        "question": [
+          "Quem eu ligo essa semana?"
+        ]
+      },
+      {
+        "id": "10000000000000000000000000000002",
+        "question": [
+          "Por que esse cliente esta no topo da minha lista?"
+        ]
+      },
+      {
+        "id": "10000000000000000000000000000003",
+        "question": [
+          "Como esta a minha carteira por faixa?"
+        ]
+      },
+      {
+        "id": "10000000000000000000000000000004",
+        "question": [
+          "Quantas ligacoes cada vendedor recebeu essa semana?"
+        ]
+      },
+      {
+        "id": "10000000000000000000000000000005",
+        "question": [
+          "Tem estoque do SKU00042?"
+        ]
+      }
     ]
   },
   "data_sources": {
     "tables": [
-      { "identifier": "lakehouse_rotaperfume.gold.dim_cliente" },
-      { "identifier": "lakehouse_rotaperfume.gold.fila_semanal" },
-      { "identifier": "lakehouse_rotaperfume.gold.score_propensao" }
+      {
+        "identifier": "lakehouse_rotaperfume.gold.dim_cliente"
+      },
+      {
+        "identifier": "lakehouse_rotaperfume.gold.fila_semanal"
+      },
+      {
+        "identifier": "lakehouse_rotaperfume.gold.score_propensao"
+      }
     ]
   },
   "instructions": {
     "example_question_sqls": [
       {
         "id": "20000000000000000000000000000001",
-        "question": ["Quem eu ligo essa semana?"],
+        "question": [
+          "Quem eu ligo essa semana?"
+        ],
         "sql": [
-          "SELECT vendedor, ordem, razao_social, cidade, ROUND(score, 2) AS score, motivo, sugestao\n",
-          "FROM lakehouse_rotaperfume.gold.fila_semanal\n",
-          "ORDER BY vendedor_id, ordem"
+          "-- Pergunta de LISTA: aqui as linhas SAO a resposta, uma por ligacao.\n",
+          "SELECT vendedor, ordem, razao_social, cidade,\n",
+          "       ROUND(score, 2) AS score, faixa, motivo, sugestao\n",
+          "FROM   lakehouse_rotaperfume.gold.fila_semanal\n",
+          "ORDER  BY vendedor_id, ordem"
         ]
       },
       {
         "id": "20000000000000000000000000000002",
-        "question": ["Quantas ligacoes cada vendedor recebeu essa semana?"],
+        "question": [
+          "Quantas ligacoes cada vendedor recebeu essa semana?"
+        ],
         "sql": [
-          "SELECT vendedor_id, vendedor, COUNT(*) AS ligacoes, ROUND(AVG(score), 3) AS score_medio\n",
-          "FROM lakehouse_rotaperfume.gold.fila_semanal\n",
-          "GROUP BY vendedor_id, vendedor ORDER BY ligacoes DESC"
+          "-- Panorama: agrupa por vendedor_id (o nome se repete) e exibe o nome.\n",
+          "-- 12 linhas com barra, nao 36 sem: ranking se le de relance ou nao se le.\n",
+          "SELECT vendedor                     AS `Vendedor`,\n",
+          "       COUNT(*)                     AS ligacoes,\n",
+          "       ROUND(AVG(score) * 100, 1)   AS chance_media_pct,\n",
+          "       repeat('█', CAST(ROUND(20.0 * COUNT(*) / MAX(COUNT(*)) OVER (), 0) AS INT)) AS barra\n",
+          "FROM   lakehouse_rotaperfume.gold.fila_semanal\n",
+          "GROUP  BY vendedor_id, vendedor\n",
+          "ORDER  BY ligacoes DESC\n",
+          "LIMIT  12"
         ]
       },
       {
         "id": "20000000000000000000000000000003",
-        "question": ["Por que a Perfumaria Aurora esta no topo da minha lista?"],
+        "question": [
+          "Como esta a minha carteira por faixa?"
+        ],
+        "sql": [
+          "-- Distribuicao da carteira de UM vendedor: 4 linhas, rotulo + numero + barra.\n",
+          "-- O filtro e por vendedor_id, NUNCA pelo nome: ha dois Henrique Oliveira\n",
+          "-- (ids 34 e 36) nesta base, e filtrar pelo nome junta as duas carteiras.\n",
+          "SELECT faixa                                              AS `Faixa`,\n",
+          "       COUNT(*)                                           AS ligacoes,\n",
+          "       ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct_da_carteira,\n",
+          "       repeat('█', CAST(ROUND(20.0 * COUNT(*) / MAX(COUNT(*)) OVER (), 0) AS INT)) AS barra\n",
+          "FROM   lakehouse_rotaperfume.gold.fila_semanal\n",
+          "WHERE  vendedor_id = 34\n",
+          "GROUP  BY faixa\n",
+          "ORDER  BY ligacoes DESC"
+        ]
+      },
+      {
+        "id": "20000000000000000000000000000004",
+        "question": [
+          "Por que a Perfumaria Aurora esta no topo da minha lista?"
+        ],
         "sql": [
           "SELECT razao_social, ROUND(score, 3) AS score, faixa, motivo, sugestao\n",
-          "FROM lakehouse_rotaperfume.gold.fila_semanal\n",
-          "WHERE razao_social ILIKE '%Aurora%'"
+          "FROM   lakehouse_rotaperfume.gold.fila_semanal\n",
+          "WHERE  razao_social ILIKE '%Aurora%'"
         ]
       }
     ],
@@ -49,11 +115,30 @@
       {
         "id": "30000000000000000000000000000001",
         "content": [
+          "QUEM PERGUNTA AQUI: o vendedor da Rota Perfume, com a carteira dele na mao e pouco tempo entre uma ligacao e outra. Responda sempre em portugues do Brasil, e trate a fila como uma lista de acao, nao como um relatorio.\n",
+          "COMO RESPONDER -- vale para TODA resposta, sem excecao, inclusive as de uma linha so. O que voce escreve e renderizado como markdown, entao use markdown de verdade:\n",
+          "1) PRIMEIRA LINHA: apenas o numero que responde a pergunta, em **negrito**, com unidade e formatado em portugues do Brasil -- **R$ 556.423,71**, **4,15x**, **42%**, **200 ligacoes**. Nunca 556423.71, nunca 0.4212.\n",
+          "2) DEPOIS: de dois a quatro bullets curtos comecando com '- ', um por ideia. O primeiro diz o recorte (periodo, quantas linhas, quem entrou na conta); o segundo compara com alguma coisa (a semana inteira, a media, ligar no aleatorio); o terceiro aponta o que chama atencao. Bullet nao e paragrafo: uma frase cada.\n",
+          "3) ULTIMA LINHA: sempre a procedencia, em italico, dizendo a tabela, o filtro e o denominador. Exemplo: _Fonte: gold.fila_semanal, carteira do vendedor, 12 das 200 ligacoes da semana._ Numero sem fonte e sem denominador e como uma reuniao inteira acaba discutindo a coisa errada.\n",
+          "4) TODO PERCENTUAL VEM COM O DENOMINADOR ESCRITO POR EXTENSO: '12% (6 de 50 ligacoes trabalhadas)', nunca '12%' sozinho. Se o denominador tiver menos de 30 linhas, diga na PRIMEIRA linha que a amostra e pequena demais para concluir, antes de dar o numero.\n",
+          "5) Se o numero for estimativa, a palavra **estimativa** aparece na primeira linha, junto do numero -- nunca no rodape, onde ninguem le.\n",
+          "6) Nunca devolva so a tabela crua. A tabela e o anexo; a resposta sao as tres partes acima.\n",
+          "COMO ESCREVER O SQL PARA A RESPOSTA VIRAR GRAFICO. O grafico so aparece quando o RESULTADO tem formato de grafico, e quem decide isso e a consulta -- nao o pedido:\n",
+          "- AGREGUE. Pergunta de panorama ('quais vendedores', 'por faixa', 'como estao os retornos') devolve de 3 a 12 linhas, nunca 200. So liste linha a linha quando pedirem a lista.\n",
+          "- DUAS COLUNAS JA FAZEM UM GRAFICO: um rotulo de texto e um numero. De ao rotulo o nome de negocio -- Vendedor, Faixa, Resultado da ligacao -- e nunca devolva um id como rotulo (agrupe pelo id, exiba o nome).\n",
+          "- ORDER BY no numero, decrescente, com LIMIT explicito.\n",
+          "- ARREDONDE: ROUND(x, 2) para dinheiro; percentual ja multiplicado por 100 (12.5, nao 0.125).\n",
+          "- EM RANKING E EM DISTRIBUICAO, acrescente uma coluna chamada barra, que desenha o tamanho relativo dentro da propria tabela:\n",
+          "      repeat('█', CAST(ROUND(20.0 * COUNT(*) / MAX(COUNT(*)) OVER (), 0) AS INT)) AS barra\n",
+          "  Ela e o grafico que aparece sempre, mesmo quando o resultado volta como tabela, e e o que faz a resposta ser lida em um segundo. Use em ranking e distribuicao; nunca em resposta de uma linha so.\n",
+          "- NUNCA misture uma parte com o total na mesma comparacao (vendeu e um subconjunto de trabalhados). Ou compara partes entre si, ou mostra a parte sobre o total em percentual, com o denominador escrito.\n",
           "Use SEMPRE as tabelas e funcoes deste espaco. NUNCA invente numero, nome de cliente ou quantidade de estoque: se o dado nao estiver aqui, diga que nao sabe.\n",
           "A fila da semana e gold.fila_semanal: 200 linhas, uma por ligacao, ja atribuidas ao vendedor dono da carteira vigente. Para 'quem eu ligo', use essa tabela e ordene por ordem.\n",
           "A coluna motivo ja traz, em portugues, por que o cliente esta na fila. Para 'por que fulano esta na lista', devolva o motivo -- nao tente reexplicar o modelo.\n",
           "ATENCAO aos homonimos: existem dois vendedores chamados 'Henrique Oliveira' e dois 'Vinicius Lopes'. SEMPRE agrupe por vendedor_id, nunca so pelo nome, e mostre vendedor_id quando houver ambiguidade.\n",
-          "score e a probabilidade de compra nos proximos 7 dias, de 0 a 1, vinda de gold.score_propensao. A taxa base da semana e 10,12%: ligar no aleatorio acerta cerca de 20 em 200.\n",
+          "O SCORE ORDENA BEM, MAS NAO E UMA PROMESSA. No holdout, com os cortes atuais, a taxa de compra medida sobe faixa a faixa -- Fria 4,0%, Morna 23,3%, Quente 39,5%, Muito quente 48,9% -- entao a ordem da fila e confiavel. O VALOR ABSOLUTO na ponta de cima e OTIMISTA: a faixa Muito quente tinha score medio previsto de 0,69 e converteu 0,49 (47 clientes no holdout). Use o score para PRIORIZAR e vezes_base para EXPLICAR; nunca diga que um score de 0,45 significa 45% de chance. Quando a pergunta for sobre quanto a fila vale, lembre que a receita esperada herda esse otimismo e e estimativa por cima.\n",
+          "A FAIXA NAO E QUARTIL -- ela e a chance comparada com a taxa base de 10,12% (a conversao de quem liga sem modelo): Fria abaixo da base, Morna a partir de 1x, Quente de 2x e Muito quente de 4x (score >= 0,405). A coluna vezes_base traz esse multiplo pronto. NUNCA diga a faixa sem o multiplo do lado: 'Muito quente' sozinho soa certeza, 'Muito quente, 4,4x a chance media' e a informacao. A ordem e a sequencia de ligacao dentro da carteira de cada vendedor, do maior score para o menor. O motivo e a frase pronta que explica por que aquele cliente entrou na fila.\n",
+          "A COLUNA sugestao SO MANDA OFERECER O QUE TEM ESTOQUE. Quando o texto comeca com 'Oferecer', o saldo foi conferido no snapshot mais recente daquele SKU. Quando comeca com 'Sem sugestao', nao ha o que oferecer da marca preferida -- e ai a resposta e essa, nunca empurrar o SKU citado no fim da frase.\n",
           "Para disponibilidade de produto, use a funcao gold.checar_disponibilidade(sku) -- ela le o snapshot mais recente daquele SKU. Nunca afirme que ha estoque sem consultar.\n",
           "Outras funcoes uteis: gold.priorizar_carteira(nome_do_vendedor, quantos), gold.contexto_cliente(cliente_id) e gold.sugerir_produtos(cliente_id)."
         ]

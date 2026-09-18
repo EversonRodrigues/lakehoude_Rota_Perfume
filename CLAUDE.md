@@ -132,7 +132,49 @@ actually fire, change the Volume and run the second task alone:
   offer), four SQL functions in UC that the agent calls
   (`priorizar_carteira`, `contexto_cliente`, `sugerir_produtos`,
   `checar_disponibilidade`), and three `raise_error` tests. Plus
-  `resources/genie-comercial.json`, the Genie Space payload.
+  `resources/genie-comercial.json`, the Genie Space payload. **Four** tests since the
+  post-deploy review — test 4 fails the job if any row tells a seller to offer
+  a SKU with no stock.
+**Two defects found after everything was live, both fixed and both measured.**
+Neither was an arithmetic error — the job was green, the 9 tests passed, revenue
+reconciled across layers. They are the kind a pipeline test cannot catch: the
+number is right and still says the wrong thing. The audit is written up as
+`prompts/noite-3-machine-learning/04-revisao-do-modelo.md`.
+
+- **`faixa` was `NTILE(4)` — a quartile, not a threshold.** "Muito quente" ran
+  from score **0.0407 to 0.9821**, 24× under one word, and since the queue is
+  the top 200 by score it fell entirely inside the top quartile: `SELECT faixa,
+  COUNT(*) FROM gold.fila_semanal GROUP BY faixa` returned **one row**. The
+  column was constant exactly where it is read. Cuts are now multiples of the
+  measured `taxa_base` (10.12%) — 1×, 2×, 4× — which makes the label mean the
+  same thing every week and vary inside the queue again (**59 Quente, 141 Muito
+  quente**). New column **`vezes_base`** ships next to it: 0.45 reads as low
+  until you see **4.4× the base**. `calibragem_holdout` uses the *same* cuts —
+  a calibration table on different cuts proves a band nobody sees.
+- **The queue told sellers to offer out-of-stock SKUs — 39 of 200.** The
+  `ROW_NUMBER()` in the `sugestao` CTE ordered by `SUM(quantidade)` alone;
+  stock arrived by `LEFT JOIN` and was only inspected *afterwards*, in the
+  `CASE` that writes the text (`Oferecer SKU00042 -- ATENCAO: saldo zerado`).
+  The system knew and said "offer anyway", with the caveat at the end of the
+  sentence — the seller reads the verb. Availability moved **into the
+  `ORDER BY`**, ahead of volume (not into a `WHERE`, which would leave the
+  client with no suggestion instead of the second-best one that is actually in
+  the warehouse), and the word "Oferecer" now appears only when there is stock.
+  After: **0 of 200**, 192 offering confirmed stock, 1 with nothing available.
+
+**The finer cuts exposed something the quartile was hiding: the model orders
+better than it estimates.** On the old quartile the top band predicted 0.3009
+and delivered 0.3011, which looked like perfect calibration — it was an average
+over scores from 0.04 to 0.98 cancelling out. On the new bands the measured rate
+still rises monotonically (4.0% → 23.3% → 39.5% → 48.9%, so the ordering and the
+4.15× lift stand), but `Muito quente` predicts **0.6942** and converts **0.4894**
+(n=47). Consequence: anything multiplying score by money — `receita_esperada =
+SUM(score * ticket_medio)` — inherits that optimism and is an estimate **on the
+high side**. Calibrating (`CalibratedClassifierCV`, isotonic, on a held-out
+slice) is the open item; until then both Genie spaces are instructed to use the
+score to prioritise and `vezes_base` to explain, and never to sell a score as a
+probability.
+
 - `resources/dashboard-comercial.lvdash.json` + `resources/dashboard.dashboard.yml`
   (resource `dashboards.comercial`) — the AI/BI dashboard **as code**, deployed by
   the bundle, not clicked. 14 widgets over a **single** dataset `ds_vendas`, with
@@ -156,12 +198,13 @@ actually fire, change the Volume and run the second task alone:
   `Rota Perfume · Direção`, deployed by the bundle. Same model, same data as the
   comercial one; what differs is the audience, and the audience lives in ~20
   lines of business instruction under Git. Five sources (`fila_semanal`,
-  `score_propensao`, `modelo_metricas`, `retorno_ligacao`, `dim_cliente`), five
-  sample questions, five validated question→SQL pairs, one `text_instructions`.
+  `score_propensao`, `modelo_metricas`, `retorno_ligacao`, `dim_cliente`), six
+  sample questions, seven validated question→SQL pairs, one `text_instructions`.
   Its hard rules: expected queue revenue is `SUM(score * ticket_medio)` and is an
   **estimate**; the director's metric is `lift_top200` and it must **never** cite
   AUC; zero returns means "nobody has registered one yet", never the queue used
   as if it were a result.
+
 - `rotaperfume-direcao/` — night 4's **second** deliverable, the app. Scaffolded
   with `databricks apps init --features analytics,genie` (AppKit 0.57.0). Two
   screens: `A semana` (four KPI cards + vendor filter + the 200-row queue) and
@@ -180,6 +223,31 @@ actually fire, change the Volume and run the second task alone:
   **with no Genie code changed at all**. Test rows deleted afterwards; the table
   is back to 0, which is the correct starting state.
 
+**Both Genie spaces share one answer-format contract**, carried in the single
+`text_instructions` entry of each payload and deliberately identical in
+`direcao.geniespace.json` and `genie-comercial.json` — only the persona line
+differs. Genie renders markdown, so the instruction asks for markdown: a bolded
+headline number formatted pt-BR on line 1, two to four one-sentence bullets,
+and a closing italic provenance line naming the table, the filter and the
+denominator. It is the same four-part `Kpi` contract the app enforces in
+`components/Kpi.tsx` — value, comparison, highlight, provenance — restated
+where the answer is prose instead of a card. Every percentage must spell out
+its denominator, and below 30 rows the answer has to say the sample is too
+small before giving the number.
+
+**A chart appears only when the RESULT is chart-shaped, and the SQL decides
+that** — there is no Genie setting for "draw a chart". So the instructions also
+constrain the query: aggregate a panorama question to 3–12 rows (never the 200
+of the queue), return a business-named text label plus one number, `ORDER BY`
+the number with an explicit `LIMIT`, and round. On rankings and distributions
+the query adds a `barra` column, `repeat('█', CAST(ROUND(20.0 * x / MAX(x)
+OVER (), 0) AS INT))`, which draws the relative size inside the result table
+itself — the one "chart" that survives even when the answer comes back as
+plain rows. The example SQLs were reshaped to teach exactly that: `O modelo e
+bom?` now returns **two** rows (model queue vs. random calling) instead of a
+metrics row, because a comparison is what the director actually asked for and
+two rows is a bar chart. `█` is deliberate over `|`, which would break the
+markdown table it is rendered inside.
 The `Acompanhamento` screen was later reworked into the director's read of the
 week. `acompanhamento.sql` now also carries `receita_fechada` / `receita_aberta`
 / `receita_esperada` (`SUM(ticket_medio)` by outcome — an **estimate**, the
@@ -375,6 +443,27 @@ if no compute is configured. There is no way to run the suite offline.
   comes back identical, the link does not — re-read it from `bundle summary`.
 - **`bundle` commands must run from inside `rotaperfumes/`**, or they fail with
   `Unable to locate the bundle root`.
+- **Never label a score with `NTILE` when the reader needs a threshold.** A
+  quartile answers "where does he rank", and whoever is about to call needs "what
+  are his odds". Worse, a quartile label is **constant inside any top-N slice**
+  taken from the same score — the queue is the top 200, the top quartile holds
+  704, so every row read the same. Test a label in the slice where it is
+  displayed, not across the whole base: `GROUP BY` on the final table returning
+  one row is the signature.
+- **Put the business rule in whatever CHOOSES, not in whatever describes.** The
+  out-of-stock suggestion had the check in the `CASE` that writes the text while
+  the `ROW_NUMBER()` had already picked the SKU. A caveat appended to an
+  instruction (`Oferecer X -- ATENCAO: saldo zerado`) does not stop anyone: change
+  the verb, not the footnote.
+- **A coarse calibration band can hide the error by averaging it away.** The
+  quartile's top band matched its own prediction to three decimals while mixing
+  0.04 with 0.98. Calibration must be measured on the **same cuts the user sees**.
+- **`databricks jobs run-now` takes `job_id` INSIDE the `--json`**, never as a
+  positional argument alongside it: `no positional arguments are allowed`.
+- **The Windows console is cp1252 and cannot encode `█` (or accents).** Any
+  command built by interpolating a Python-printed string with those characters
+  dies with `UnicodeEncodeError: 'charmap' codec`. Write the SQL or the JSON to a
+  UTF-8 file and pass `-f arquivo.sql` / `--json @arquivo.json`.
 - **Never build an ML feature from `gold.dim_cliente`.** Its `dias_sem_comprar`,
   `receita_acumulada` and `total_pedidos` are aggregated over the whole base with
   no cutoff — using any of them is leakage. Features come from `fato_vendas`,

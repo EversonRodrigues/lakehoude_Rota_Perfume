@@ -24,6 +24,8 @@ colar:
 | `<WAREHOUSE_ID>` | SQL Warehouse que roda as consultas | `databricks warehouses list --profile <PERFIL>` |
 | `<HOST_DO_WORKSPACE>` | URL do workspace, com `https://` | aparece em `databricks auth profiles` |
 | `<SEU_EMAIL>` | Conta que faz o deploy | `databricks current-user me --profile <PERFIL>` |
+| `<JOB_ID>` | Id do `rotaperfume_pipeline` no seu workspace | `databricks bundle summary --target dev --profile <PERFIL>` |
+| `<GENIE_SPACE_ID>` | Id de um Genie space | `databricks genie list-spaces --profile <PERFIL>` |
 
 `<HOST_DO_WORKSPACE>` e `<SEU_EMAIL>` aparecem pouco: quase tudo se resolve com
 `--profile`, porque o perfil já carrega o host. Essa é a razão de **todo comando
@@ -63,6 +65,7 @@ De dez CSVs a um lakehouse com teste. Cinco entregas, cinco deploys.
 | 1 | [01-features.md](noite-3-machine-learning/01-features.md) | 20 features por cliente, com corte temporal — uma função para treino e escore |
 | 2 | [02-modelo.md](noite-3-machine-learning/02-modelo.md) | Baselines, o modelo, MLflow e o registro no Unity Catalog |
 | 3 | [03-fila-e-agente.md](noite-3-machine-learning/03-fila-e-agente.md) | A fila dos 200, as funções SQL e o Genie comercial |
+| 4 | [04-revisao-do-modelo.md](noite-3-machine-learning/04-revisao-do-modelo.md) | A auditoria depois do deploy: a faixa que não informava nada e a sugestão sem estoque |
 
 Para refazer a noite do zero: [99-limpar.md](noite-3-machine-learning/99-limpar.md)
 e o script [99-limpar.sh](noite-3-machine-learning/99-limpar.sh).
@@ -77,6 +80,7 @@ e o script [99-limpar.sh](noite-3-machine-learning/99-limpar.sh).
 | 1 | [01-genie.md](noite-4-genie-e-app/01-genie.md) | O caminho de volta: `retorno_ligacao`, o Genie da direção, a auditoria de metadado |
 | 2 | [02-app.md](noite-4-genie-e-app/02-app.md) | O Databricks App: a fila dos 200 na tela do diretor |
 | 3 | [03-retorno.md](noite-4-genie-e-app/03-retorno.md) | O ciclo se fecha: a tela de acompanhamento e a única rota de escrita |
+| 4 | [04-estilo-de-resposta.md](noite-4-genie-e-app/04-estilo-de-resposta.md) | O contrato de formato das respostas do Genie — bullets, procedência e a barra no resultado |
 
 Scripts: [99-limpar.sh](noite-4-genie-e-app/99-limpar.sh) desfaz a noite inteira;
 [99-limpar-retornos.sh](noite-4-genie-e-app/99-limpar-retornos.sh) apaga só as

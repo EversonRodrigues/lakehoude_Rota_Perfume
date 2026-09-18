@@ -270,13 +270,38 @@ saida = pd.DataFrame(
     }
 )
 
+# A FAIXA E ANCORADA NA TAXA BASE, NAO EM QUARTIL.
+#
+# Ela ja foi `NTILE(4) OVER (ORDER BY score)`, e o quartil mentia de duas
+# maneiras ao mesmo tempo, as duas medidas:
+#
+#   1. "Muito quente" era o quartil de cima da base inteira, entao ia de
+#      score 0,0407 a 0,9821 -- 24 vezes de diferenca sob a MESMA palavra.
+#   2. A fila e o top 200 por score, logo as 200 linhas caiam dentro desse
+#      quartil: `SELECT faixa, COUNT(*) FROM gold.fila_semanal GROUP BY faixa`
+#      devolvia uma linha so, "Muito quente 200". A coluna era constante
+#      exatamente onde o vendedor a le.
+#
+# Quartil responde "em que posicao ele esta"; quem vai ligar precisa de "qual e
+# a chance dele". Os cortes agora sao multiplos da taxa base medida no treino
+# (taxa_base = a conversao de quem liga sem modelo): 1x, 2x e 4x. A faixa passa
+# a significar a mesma coisa toda semana, e nao muda de sentido porque a base
+# de clientes cresceu.
+#
+# `vezes_base` existe para a faixa nunca aparecer sozinha: um score de 0,45
+# soa baixo ate voce ler que e 4,4x a media da base. O numero e o denominador
+# andam juntos ou o numero engana.
+CORTES = {"Morna": 1.0, "Quente": 2.0, "Muito quente": 4.0}
+
 spark.createDataFrame(saida).createOrReplaceTempView("_score_bruto")
 spark.sql(f"""
     CREATE OR REPLACE TABLE {catalog}.gold.score_propensao AS
     SELECT cliente_id, score,
-           CASE NTILE(4) OVER (ORDER BY score)
-                WHEN 1 THEN 'Fria' WHEN 2 THEN 'Morna'
-                WHEN 3 THEN 'Quente' ELSE 'Muito quente' END AS faixa,
+           CASE WHEN score >= {CORTES["Muito quente"] * taxa_base} THEN 'Muito quente'
+                WHEN score >= {CORTES["Quente"] * taxa_base}       THEN 'Quente'
+                WHEN score >= {CORTES["Morna"] * taxa_base}        THEN 'Morna'
+                ELSE 'Fria' END                    AS faixa,
+           ROUND(score / {taxa_base}, 2)           AS vezes_base,
            _referencia, versao, current_timestamp() AS _pontuado_em
     FROM _score_bruto
 """)
@@ -317,9 +342,19 @@ spark.createDataFrame(metricas).withColumn("_treinado_em", F.current_timestamp()
 # A calibragem e a prova que o comercial confere sozinho, sem saber o que e AUC:
 # a taxa de compra tem que SUBIR da faixa fria para a muito quente.
 holdout = pd.DataFrame({"score": modelo.predict_proba(X_te)[:, 1], "comprou": y_te.to_numpy()})
-# qcut direto no score quebra com empates ("bin edges must be unique").
-# Ranquear antes garante quatro faixas do mesmo tamanho.
-holdout["faixa"] = pd.qcut(holdout["score"].rank(method="first"), 4, labels=["Fria", "Morna", "Quente", "Muito quente"])
+# A calibragem TEM que usar os mesmos cortes de gold.score_propensao, senao ela
+# prova uma faixa que ninguem ve. Era `pd.qcut(..., 4)` -- quatro grupos do
+# mesmo tamanho, que e outra coisa: media a ordenacao, nao o significado do
+# rotulo. Com os cortes absolutos os grupos saem de tamanhos diferentes, e isso
+# e o esperado: pouca gente mesmo tem 4x a chance media.
+holdout["faixa"] = pd.cut(
+    holdout["score"],
+    bins=[-float("inf")]
+    + [CORTES[f] * taxa_base for f in ("Morna", "Quente", "Muito quente")]
+    + [float("inf")],
+    labels=["Fria", "Morna", "Quente", "Muito quente"],
+    right=False,
+)
 calibragem = (
     holdout.groupby("faixa", observed=True)
     .agg(clientes=("comprou", "size"), compraram=("comprou", "sum"), score_medio=("score", "mean"))
@@ -347,7 +382,8 @@ COMENTARIOS = {
         "_tabela": "Propensao de compra na proxima semana, um cliente por linha, no corte de features_cliente. Score continuo de 0 a 1 vindo de predict_proba -- nao e classe.",
         "cliente_id": "Cliente. Chave para gold.dim_cliente.",
         "score": "Probabilidade estimada de comprar nos proximos 7 dias. Contínuo: se so houver 0 e 1, foi usado predict no lugar de predict_proba.",
-        "faixa": "Quartil do score: Fria, Morna, Quente, Muito quente. Serve para conversar com o comercial sem falar em probabilidade.",
+        "faixa": "Chance do cliente comparada com a taxa base (a conversao de quem liga sem modelo): Fria abaixo da base, Morna a partir de 1x, Quente de 2x e Muito quente de 4x. NAO e quartil -- quartil fazia as 200 linhas da fila cairem todas no mesmo rotulo.",
+        "vezes_base": "Quantas vezes a chance deste cliente supera a taxa base. E o denominador da faixa: 0,45 parece pouco ate se ler 4,4x a media.",
         "_referencia": "Data de corte das features usadas para pontuar.",
         "versao": "Versao do modelo no Unity Catalog que gerou este score. E o que liga a fila ao registro.",
         "_pontuado_em": "Quando a pontuacao rodou.",
@@ -368,8 +404,8 @@ COMENTARIOS = {
         "_treinado_em": "Quando o treino rodou.",
     },
     "calibragem_holdout": {
-        "_tabela": "Taxa de compra por faixa de score no holdout. E a prova que o comercial confere sozinho: a taxa tem que SUBIR da faixa fria para a muito quente.",
-        "faixa": "Quartil do score.",
+        "_tabela": "Taxa de compra por faixa de score no holdout, nos MESMOS cortes de gold.score_propensao. E a prova que o comercial confere sozinho: a taxa tem que SUBIR da faixa fria para a muito quente, e o score medio previsto tem que ficar na mesma ordem de grandeza. Hoje nao bate na ponta de cima: a faixa Muito quente preve 0,69 e converte 0,49 -- o modelo ordena melhor do que estima, e por isso a receita esperada da fila e estimativa por cima.",
+        "faixa": "Mesma faixa de gold.score_propensao: multiplos da taxa base, nao quartil. Grupos de tamanhos diferentes sao o esperado.",
         "clientes": "Clientes do holdout na faixa.",
         "compraram": "Quantos compraram na janela de 7 dias.",
         "score_medio": "Score medio da faixa.",
