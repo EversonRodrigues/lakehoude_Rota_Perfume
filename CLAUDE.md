@@ -426,6 +426,22 @@ if no compute is configured. There is no way to run the suite offline.
 - **Serverless cold starts dominate the clock.** A warm run of the two-task job
   takes ~2min30; after the SQL Warehouse or serverless compute goes idle, the
   first query or run can take several minutes. Wake it before a live demo.
+- **Budget the full 15-task run at ~10 minutes warm.** Measured end to end,
+  all green: **9m35s** wall clock. Per task — `raw_conferencia` 23s,
+  `bronze_ingestao` 63s, `silver_clientes` 23s, `silver_pedidos` 21s,
+  `silver_itens_produtos` 32s, `silver_crm_financeiro` 49s, `gold_dimensoes`
+  56s, `gold_fato_vendas` 32s, `gold_marts` 52s, `gold_retorno_ligacao` 2s,
+  `testes` 10s, `ml_features` 87s, **`ml_modelo` 146s**, `ml_fila` 30s,
+  `auditoria_de_metadado` 2s. Three things worth knowing before you time
+  anything: the durations **sum to 10m28s against 9m35s of wall clock**,
+  because the four `silver_*` tasks run in parallel and cost the slowest (49s)
+  rather than the total (125s); the critical path is **9m10s**, leaving only
+  ~25s of orchestration — that slack is small *because the job was warm*, and
+  cold it is what turns into minutes; and `ml_modelo` alone is a quarter of the
+  run, since it now fits three candidates with five internal folds per
+  calibration plus the `lift_top200` cross-validation. Tuning the wrong task is
+  the usual mistake here — `gold_retorno_ligacao` and `auditoria_de_metadado`
+  take 2s each.
 - **DBSQL runs in ANSI mode: use `try_to_date`, never `to_date`.** A malformed
   date *aborts the query* with `CAST_INVALID_INPUT` instead of returning NULL.
   Source dates come in two formats mixed in one column, so every conversion is
