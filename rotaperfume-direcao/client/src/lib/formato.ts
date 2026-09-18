@@ -87,3 +87,18 @@ export const ROTULO_STATUS: Record<string, string> = {
   sem_interesse: 'Sem interesse',
   nao_atendeu: 'Não atendeu',
 };
+
+/** Data e hora curtas: "17/09/2026 04:18". Usado no rodape de frescor. */
+export function dataHora(v: unknown): string {
+  if (typeof v !== 'string' && typeof v !== 'number' && !(v instanceof Date)) return '—';
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+}

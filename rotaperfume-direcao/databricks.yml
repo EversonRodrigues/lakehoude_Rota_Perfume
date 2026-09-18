@@ -35,12 +35,14 @@ resources:
             permission: CAN_RUN
 
 targets:
+  # ATENCAO: o target deste app e `default`, nunca `dev`.
+  #
+  # Nao ha host aqui, e nao e esquecimento: `workspace.host` e resolvido ANTES
+  # das variaveis (e configuracao de autenticacao), entao `${var...}` ali falha.
+  # Quem informa o workspace e o `--profile`, lido do ~/.databrickscfg.
+  #
+  # O warehouse e o id do Genie space vem de
+  # .databricks/bundle/default/variable-overrides.json, que o git ignora.
+  # Crie-o com `npm run configurar` a partir de variable-overrides.exemplo.json.
   default:
     default: true
-    workspace:
-      host: https://dbc-73ba6d88-0c16.cloud.databricks.com
-
-    variables:
-      sql_warehouse_id: 47307f0445a667ac
-      genie_space_id: 01f1b1837d96157089e210074db81dea
-      genie_space_name: Rota Perfume · Direção

@@ -1,11 +1,44 @@
-# Cache do VS Code / extensao do Claude Code -- 160 MB de binario que nao tem
-# nada a ver com o projeto.
+# ---------------------------------------------------------------------------
+# Segredo e identidade: NUNCA versionar
+# ---------------------------------------------------------------------------
+# Os valores do SEU workspace (e-mail, warehouse id, Genie space id) moram aqui.
+# O .databricks/ inteiro ja e ignorado pelos bundles, mas a regra fica repetida
+# na raiz de proposito: e a que impede o acidente de publicar identidade.
+**/.databricks/
+**/variable-overrides.json
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Editor e cache de ferramenta
+# ---------------------------------------------------------------------------
+# Preferencia de editor da raiz -- local, nao do projeto. O .vscode/ DENTRO do
+# bundle e versionado de proposito (traz o __builtins__.pyi que o ruff precisa).
+/.vscode/
 .vscode-cache/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
 
-# Estado local da CLI do Databricks (bundle state, credenciais de deploy).
-.databricks/
-
-# Ambientes virtuais e caches de ferramenta, caso apareçam fora do bundle.
+# ---------------------------------------------------------------------------
+# Dependencias e build
+# ---------------------------------------------------------------------------
+node_modules/
 .venv/
 __pycache__/
+*.egg-info/
+*.py[cod]
+build/
+dist/
+client/dist/
+
+# ---------------------------------------------------------------------------
+# Saida de teste e rascunho
+# ---------------------------------------------------------------------------
+.pytest_cache/
 .ruff_cache/
+test-results/
+playwright-report/
+scratch/

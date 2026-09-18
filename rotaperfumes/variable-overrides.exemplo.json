@@ -1,0 +1,15 @@
+{
+  "_comentario": [
+    "MODELO. Copie para .databricks/bundle/<target>/variable-overrides.json",
+    "(o script scripts/configurar.ps1 faz isso para dev e prod de uma vez) e",
+    "preencha com os valores do SEU workspace. O destino esta no .gitignore:",
+    "estes valores nunca entram no repositorio.",
+    "",
+    "O host do workspace NAO fica aqui -- ele vem do --profile.",
+    "",
+    "workspace_user  -> databricks current-user me --profile <perfil>",
+    "warehouse_id    -> databricks warehouses list --profile <perfil>"
+  ],
+  "workspace_user": "voce@exemplo.com",
+  "warehouse_id": "0000000000000000"
+}

@@ -14,10 +14,9 @@ parts:
   `itens_pedido.csv` is the big one (197,724 rows), `vendedores.csv` the small
   one (42). These files are the local stand-in for the ERP/CRM exports — they get
   uploaded to a Unity Catalog Volume, not read from disk by jobs.
-- `rotaperfume/` and `rotaperfumes/` — **two near-identical Declarative
-  Automation Bundles (DABs), one per workspace.** See below. All
-  bundle/`uv`/`pytest` commands must be run from inside one of these
-  directories, never the repo root.
+- `rotaperfumes/` — **the Declarative Automation Bundle (DAB)** that holds the
+  catalog, the 15-task job and the dashboard. All bundle/`uv`/`pytest` commands
+  must be run from inside this directory, never the repo root.
 - `rotaperfume-direcao/` — **a Databricks App (AppKit: Node/TypeScript/React),
   not a bundle.** Night 4's second deliverable: the 200-call queue on screen for
   the sales director, with the `Rota Perfume · Direção` Genie embedded. It has
@@ -26,44 +25,51 @@ parts:
   `bundle deploy`. Running `bundle deploy` on it would create the app stopped,
   with `no_compute` and no URL. Node commands (`npm run typegen`, `lint`,
   `typecheck`) run from inside this directory.
-- `.llm/prompt_01.md` — the course script for deliverable 1. Read it before
-  extending a bundle; it carries the target architecture and pitfalls learned the
-  hard way. Written in Portuguese, as is the domain vocabulary throughout the
-  data and the code.
+- `prompts/` — the course scripts, one directory per night
+  (`noite-2-engenharia-de-dados/`, `noite-3-machine-learning/`,
+  `noite-4-genie-e-app/`), indexed by `prompts/README.md`. Read the matching one
+  before extending anything; they carry the target architecture and the pitfalls
+  learned the hard way. Written in Portuguese, as is the domain vocabulary
+  throughout the data and the code. **Workspace identity in them is replaced by
+  the markers `<PERFIL>`, `<WAREHOUSE_ID>`, `<HOST_DO_WORKSPACE>`, `<SEU_EMAIL>`**
+  — never substitute a real value back into a committed file.
+- `README.md` — the public walkthrough of the whole project. Keep it honest when
+  a command or a number changes.
 
-## The two bundles — pick the right one
+## No workspace identity in this repo — how config works
 
-`rotaperfumes/` began as a copy of `rotaperfume/` pointed at a second Free
-Edition workspace. **Directory, CLI profile, and catalog must always agree:**
+There is exactly one bundle (`rotaperfumes/`) plus the app
+(`rotaperfume-direcao/`), and **neither carries a workspace host, an e-mail or a
+warehouse id**. Two mechanisms replace them, and both are load-bearing:
 
-| Directory | `--profile` | Host | Catalog | State |
-|---|---|---|---|---|
-| `rotaperfumes/` | `rotaperfumes` | `dbc-73ba6d88-0c16` | `lakehouse_rotaperfume` | deliverable 1 built and deployed |
-| `rotaperfume/` | `rotaperfume` | `dbc-3a577ebb-7807` | see warning below | empty scaffold; catalog populated by hand |
+- **The host comes from `--profile`**, read from `~/.databrickscfg`, which is
+  outside the repo. `workspace.host` is resolved *before* bundle variables (it is
+  auth config), so `${var.something}` there fails with
+  `invalid character "{" in host name`. That is why every command in this project
+  passes `--profile <name>` explicitly — never rely on default resolution.
+- **Everything else is a bundle variable with no default**, filled in
+  `.databricks/bundle/<target>/variable-overrides.json`, which `.gitignore`
+  excludes. `rotaperfumes/` needs `workspace_user` + `warehouse_id`;
+  `rotaperfume-direcao/` needs `sql_warehouse_id` + `genie_space_id` +
+  `genie_space_name`. Templates live at `variable-overrides.exemplo.json` in each
+  directory, and are created by `.\scripts\configurar.ps1` (bundle) and
+  `npm run configurar` (app).
 
-Both profiles authenticate as `everson101288@gmail.com`, so the
-`everson101288@gmail.com` in each `prod` block is correct, not a template
-leftover.
+**No default on those variables is deliberate.** A default would be somebody's
+real e-mail, and a wrong one deploys into another person's workspace. Missing
+values fail loudly at `bundle validate`, naming the variable.
 
-**`rotaperfume/databricks.yml` has a real bug:** it sets
-`catalog: lakehoude_Rota_Perfume`, a catalog that does not exist — the
-misspelling is the repo folder name leaking into the YAML. The catalog actually
-in that workspace is `lakehouse_rotaperfume`, correctly spelled, already
-populated by hand: `bronze`/`silver`/`gold` with no COMMENTs, a volume
-`bronze.tabelas_rotaperfume`, and all 10 bronze tables loaded manually. Porting
-deliverable 1 there needs the name fixed *and* the pre-existing schemas resolved
-(a DAB fails to create a schema that already exists — drop them or import them
-into bundle state first).
+**When adding a resource, never hard-code an id.** Use `${var.warehouse_id}` /
+`${var.workspace_user}`; every existing resource already does.
 
-The course script itself targets a third workspace (`dbc-84cd5511-fa25`, profile
-`projeto-dados-ia`, warehouse `666be37e3fededf2`) that this checkout does not
-have — treat those values as illustrative, never copy them.
+The workspace this checkout is wired to belongs to the course author's account,
+which is why `workspace_user` in the local override file is not the current
+user's e-mail — that is correct, not a leftover.
 
 ## Current state — nights 1 to 4 (prompt 1) are done in `rotaperfumes/`
 
 Built and verified end-to-end against the `rotaperfumes` workspace. Each
-deliverable has a course script in `.llm/prompt_0N.md` — `prompt_01.md` came with
-the repo, `prompt_02.md` was written here from the measured run.
+deliverable has a course script in `prompts/noite-N-*/` — see `prompts/README.md` for the index.
 
 - `resources/catalogo.yml` — schemas `bronze`/`silver`/`gold` + MANAGED volume
   `bronze.raw`, all with `COMMENT`s
@@ -165,14 +171,34 @@ actually fire, change the Volume and run the second task alone:
   Measured live: **200 contacts, 36 sellers, R$ 556.423,71 expected, 4,15× lift,
   84/200, 0 returns**. First deploy **4m27s**, redeploy **1m19s**.
 - **Night 4's third deliverable closed the loop**: a third screen
-  `Acompanhamento` (`/acompanhamento`, reading `acompanhamento.sql` + a
-  `BarChart` per seller) and the app's **only write path** —
+  `Acompanhamento` (`/acompanhamento`, reading `acompanhamento.sql`) and the
+  app's **only write path** —
   `POST /api/retorno` in `server/server.ts`. Verified end to end: an invalid
   `status` is refused with **400** and never reaches the warehouse; a valid body
   writes the row; the Genie space then answered *"2 ligações registradas, 1
   virou pedido"* where minutes earlier it said nobody had registered anything —
   **with no Genie code changed at all**. Test rows deleted afterwards; the table
   is back to 0, which is the correct starting state.
+
+The `Acompanhamento` screen was later reworked into the director's read of the
+week. `acompanhamento.sql` now also carries `receita_fechada` / `receita_aberta`
+/ `receita_esperada` (`SUM(ticket_medio)` by outcome — an **estimate**, the
+historical average, never the invoiced order) and `ultimo_retorno_em` for
+freshness. The screen shows four KPI cards (cobertura da fila, conversão real,
+pedidos fechados, vendedores em campo), an outcome strip over the four statuses,
+and the chart. Two honesty rules are coded in, not optional:
+
+- **The conversion's denominator is `trabalhados`, never the 200-row queue** —
+  the card says so out loud. Dividing by the queue reports a coverage problem as
+  a model problem.
+- **The realized lift is hidden below 30 worked calls** (`AMOSTRA_MINIMA`), which
+  is what the card explains in place of a number. One sale in five calls reads as
+  "2× the model" and the next return erases it.
+
+`Kpi` / `KpisEsqueleto` live in `client/src/components/Kpi.tsx`, shared by
+`SemanaPage` and `AcompanhamentoPage`. The `Kpi` contract is four parts —
+value, comparison, optional highlight, **provenance** — because a number with no
+denominator and no source is how a whole meeting ends up arguing the wrong thing.
 
 **Read and write take deliberately different paths.** Every read is a typed
 `.sql` file under `config/queries/`; no route runs a `SELECT`. The single write
@@ -236,11 +262,9 @@ make it work and are easy to break:
   `COUNT(*) / COUNT(DISTINCT pedido_id)` ≈ **6.9**; if it reads ~13.8, a join
   duplicated rows.
 
-`rotaperfume/` is still the untouched `default-python` scaffold: no `resources/`,
-no `src/`, and a `main = "rotaperfume.main:main"` entrypoint with no module
-behind it.
-
-The repo has **no commits yet** — the working tree is the entire history so far.
+The second bundle (`rotaperfume/`), an untouched `default-python` scaffold
+pointing at a catalog that never existed, was **deleted** — it only confused
+readers. There is no second workspace.
 
 ## Databricks conventions
 
@@ -259,7 +283,8 @@ matching product skill (`databricks-dabs`, `databricks-jobs`,
 
 ## Commands
 
-Run from `rotaperfumes/` (or `rotaperfume/`, swapping the profile):
+Run from `rotaperfumes/`. The profile in this checkout is `rotaperfumes`; the
+public `README.md` writes it as `meu-perfil` because a reader's will differ.
 
 ```powershell
 uv sync --dev                                              # install deps
@@ -267,15 +292,18 @@ uv run pytest                                              # all tests (needs a 
 uv run pytest tests/test_x.py::test_name                   # single test
 uv run ruff check . ; uv run ruff format .                 # lint / format (line-length 120)
 
+.\scripts\configurar.ps1                                   # ONCE: creates the gitignored variable files
 .\scripts\criar-catalogo.ps1 rotaperfumes                  # catalog first — deploy needs it to exist
 databricks bundle validate --strict --target dev --profile rotaperfumes
 databricks bundle deploy --target dev --profile rotaperfumes
 .\scripts\subir-raw.ps1 rotaperfumes                       # volume must exist before upload
 databricks bundle run rotaperfume_pipeline --target dev --profile rotaperfumes
+.\scripts\rodar-tarefa.ps1 rotaperfumes <task_key>         # ONE task, isolated — deps are assumed materialized
 ```
 
-That order matters twice: the catalog must exist before `deploy` creates the
-schemas, and the Volume must exist before any file is uploaded into it.
+That order matters three times: the variables must exist before any bundle
+command resolves, the catalog must exist before `deploy` creates the schemas,
+and the Volume must exist before any file is uploaded into it.
 
 `pytest` is not hermetic — `tests/conftest.py` eagerly opens a Databricks Connect
 session at collection time and falls back to `DATABRICKS_SERVERLESS_COMPUTE_ID=auto`
@@ -287,8 +315,11 @@ if no compute is configured. There is no way to run the suite offline.
   prefixes every resource name with `[dev <user>]`, including schemas, which
   become `dev_fulano_bronze` and break every hard-coded SQL reference.
   `rotaperfumes/databricks.yml` uses `presets: { trigger_pause_status: PAUSED }`
-  instead — that was the only effect of the mode worth keeping. `rotaperfume/`
-  still sets `mode: development`; fix that before adding schema resources there.
+  instead — that was the only effect of the mode worth keeping.
+- **`workspace.host` does not accept a bundle variable.** It is auth config and is
+  resolved before variables, so `${var.x}` there fails with `invalid character
+  "{" in host name`. The host is therefore absent from both `databricks.yml`
+  files and comes from `--profile`. Verified by trying it.
 - **Creating the catalog cannot go in the bundle.** On Free Edition with Default
   Storage enabled, the UC API rejects `CREATE CATALOG` for lack of a MANAGED
   LOCATION (`Metastore storage root URL does not exist … 400 INVALID_STATE`).
@@ -428,6 +459,19 @@ if no compute is configured. There is no way to run the suite offline.
   running both forms. `npm run typegen` will never catch this: `DESCRIBE QUERY`
   parses the statement without executing it, so the query types cleanly and
   then explodes at runtime.
+- **`vendeu` is a SUBSET of `trabalhados` — never chart them side by side.** The
+  original Acompanhamento chart was a vertical `BarChart` with
+  `yKey={['trabalhados','vendeu']}` over 36 sellers, and it failed three ways at
+  once: 36 proper names on an x-axis are an unreadable blur; two sibling bars
+  invite the eye to add a subset to its own superset; and sellers with nothing
+  worked vanished, so the bar never showed how big that person's queue was. The
+  fix is one **horizontal, stacked** bar per seller whose full length IS the
+  queue — `Vendeu` + `Sem venda` + `A ligar` — capped at 12 sellers with the
+  number dropped stated in the caption. Two mechanics to remember: ECharts draws
+  the **first category at the bottom** in horizontal mode, so `.reverse()` after
+  sorting or the best seller lands in the footer; and colors come from
+  `useThemeColors('sequential')` (indices 7/4/1 = strongest outcome first), never
+  hex — it is the only way the ramp survives the dark theme.
 - **The warehouse sends every number as a STRING over JSON**, even where the
   generated type says `number` — the type describes the column, the transport
   delivers text. `"556423.71".toLocaleString('pt-BR')` returns the string
@@ -478,5 +522,6 @@ if no compute is configured. There is no way to run the suite offline.
   `.d.ts`, not the prose. The `ExecutionContext` type itself is not exported.
 - Prefer Volumes over DBFS: a Volume is a UC object with an owner, permissions,
   and lineage.
-- There is no `.gitignore` at the repo root — only inside each bundle. Editor and
-  CLI scratch (`.vscode-cache/`, `.databricks/`) sits untracked at the root.
+- The root `.gitignore` is the one that matters for identity: it excludes
+  `**/.databricks/` and `**/variable-overrides.json` on top of the per-bundle
+  ignores. Adding a new place where workspace values live means adding it there.

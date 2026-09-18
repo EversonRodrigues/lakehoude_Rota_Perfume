@@ -1,5 +1,20 @@
-# This is a Declarative Automation Bundle definition for rotaperfumes.
-# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+# Declarative Automation Bundle do lakehouse Rota Perfume.
+# https://docs.databricks.com/dev-tools/bundles/index.html
+#
+# NENHUM valor deste arquivo aponta para um workspace especifico.
+#
+# O ENDERECO DO WORKSPACE NAO APARECE AQUI de proposito, e nao e esquecimento:
+# `workspace.host` e resolvido ANTES das variaveis do bundle (e configuracao de
+# autenticacao), entao `${var.alguma_coisa}` ali falha com "invalid character
+# '{' in host name". Quem informa o host e o `--profile`, lido do seu
+# ~/.databrickscfg, que nunca entra no repositorio. Por isso todo comando deste
+# projeto passa `--profile <nome>` explicitamente.
+#
+# O que sobra de identidade (e-mail e warehouse) e VARIAVEL sem default: voce
+# preenche uma vez, num arquivo que o git ignora, e todo comando enxerga:
+#
+#     .\scripts\configurar.ps1            (copia o modelo)
+#     notepad .databricks\bundle\dev\variable-overrides.json
 bundle:
   name: rotaperfumes
   uuid: d7dd926b-6f56-4cf8-bcd8-4a7e4a60e0e3
@@ -7,15 +22,27 @@ bundle:
 include:
   - resources/*.yml
 
-# Variable declarations. These variables are assigned in the dev/prod targets below.
 variables:
-  catalog:
-    description: The catalog to use
-  schema:
-    description: The schema to use
+  # ---- Identidade do SEU workspace. Sem default de proposito: um default aqui
+  # ---- seria exatamente o dado que a gente quer manter fora do repositorio,
+  # ---- e um valor errado deploya em cima do workspace de outra pessoa.
+  workspace_user:
+    description: |
+      E-mail da conta que faz o deploy. Vira o dono do bundle em prod.
+      `databricks current-user me --profile <perfil>` mostra o seu.
   warehouse_id:
-    description: SQL Warehouse usado pelos scripts e pelas consultas de conferencia
-    default: 47307f0445a667ac
+    description: |
+      SQL Warehouse usado pelos scripts, pelo Genie e pelas conferencias.
+      `databricks warehouses list --profile <perfil>` lista os seus.
+
+  # ---- Nomes do projeto. Estes TEM default, porque sao escolha de projeto e
+  # ---- nao segredo de ninguem. Troque se quiser outro catalogo.
+  catalog:
+    description: Catalogo do Unity Catalog que recebe bronze/silver/gold
+    default: lakehouse_rotaperfume
+  schema:
+    description: Sufixo de ambiente usado pelos recursos que precisam distinguir dev de prod
+    default: dev
 
 targets:
   dev:
@@ -29,20 +56,15 @@ targets:
     presets:
       trigger_pause_status: PAUSED
     default: true
-    workspace:
-      host: https://dbc-73ba6d88-0c16.cloud.databricks.com
     variables:
-      catalog: lakehouse_rotaperfume
       schema: dev
   prod:
     mode: production
     workspace:
-      host: https://dbc-73ba6d88-0c16.cloud.databricks.com
-      # We explicitly deploy to /Workspace/Users/everson101288@gmail.com to make sure we only have a single copy.
-      root_path: /Workspace/Users/everson101288@gmail.com/.bundle/${bundle.name}/${bundle.target}
+      # Caminho explicito para garantir UMA copia so do bundle no workspace.
+      root_path: /Workspace/Users/${var.workspace_user}/.bundle/${bundle.name}/${bundle.target}
     variables:
-      catalog: lakehouse_rotaperfume
       schema: prod
     permissions:
-      - user_name: everson101288@gmail.com
+      - user_name: ${var.workspace_user}
         level: CAN_MANAGE

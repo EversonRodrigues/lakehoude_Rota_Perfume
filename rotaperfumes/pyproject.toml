@@ -1,7 +1,7 @@
 [project]
 name = "rotaperfumes"
 version = "0.0.1"
-authors = [{ name = "everson101288@gmail.com" }]
+authors = [{ name = "Rota Perfume" }]
 requires-python = ">=3.10,<3.13"
 dependencies = [
     # Any dependencies for jobs and pipelines in this project can be added here

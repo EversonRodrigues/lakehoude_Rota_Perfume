@@ -7,10 +7,6 @@ import {
   AlertTitle,
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -29,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@databricks/appkit-ui/react';
+import { Kpi, KpisEsqueleto } from '../../components/Kpi';
 import { dataCurta, dataISO, inteiro, num, porcento, reais, ROTULO_STATUS, vezes } from '../../lib/formato';
 
 const TODOS = 'Todos';
@@ -40,50 +37,6 @@ const STATUS: { valor: string; rotulo: string }[] = [
   { valor: 'sem_interesse', rotulo: 'Sem interesse' },
   { valor: 'nao_atendeu', rotulo: 'Não atendeu' },
 ];
-
-/** Um cartao de KPI. O AppKit nao exporta KpiCard -- compomos de primitivas. */
-function Kpi({
-  titulo,
-  valor,
-  comparacao,
-  procedencia,
-}: {
-  titulo: string;
-  valor: string;
-  comparacao: string;
-  procedencia: string;
-}) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{titulo}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-1">
-        <div className="text-3xl font-semibold tabular-nums text-foreground">{valor}</div>
-        <p className="text-sm text-muted-foreground">{comparacao}</p>
-        <p className="text-xs text-muted-foreground/70">{procedencia}</p>
-      </CardContent>
-    </Card>
-  );
-}
-
-function KpisEsqueleto() {
-  return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      {[0, 1, 2, 3].map((i) => (
-        <Card key={i}>
-          <CardHeader className="pb-2">
-            <Skeleton className="h-4 w-32" />
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <Skeleton className="h-9 w-24" />
-            <Skeleton className="h-4 w-28" />
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
 
 /**
  * O PAI. Guarda tudo que precisa SOBREVIVER a uma gravacao: o filtro escolhido,

@@ -1,0 +1,16 @@
+{
+  "_comentario": [
+    "MODELO. Copie para .databricks/bundle/default/variable-overrides.json",
+    "(`npm run configurar` faz isso) e preencha com os valores do SEU workspace.",
+    "O destino esta no .gitignore: estes valores nao entram no repositorio.",
+    "",
+    "O host do workspace NAO fica aqui -- ele vem do --profile.",
+    "",
+    "sql_warehouse_id -> databricks warehouses list --profile <perfil>",
+    "genie_space_id   -> cd ../rotaperfumes && databricks bundle summary --profile <perfil>",
+    "                    (o space `genie_direcao`, criado pelo bundle do lakehouse)"
+  ],
+  "sql_warehouse_id": "0000000000000000",
+  "genie_space_id": "00000000000000000000000000000000",
+  "genie_space_name": "Rota Perfume · Direção"
+}

@@ -22,7 +22,8 @@
     "predev": "npm run sync && npm run typegen",
     "sync": "appkit plugin sync --write --silent",
     "typegen": "appkit generate-types",
-    "setup": "appkit setup --write"
+    "setup": "appkit setup --write",
+    "configurar": "node scripts/configurar.mjs"
   },
   "keywords": [],
   "author": "",

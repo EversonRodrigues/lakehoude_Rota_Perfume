@@ -25,6 +25,14 @@ declare module "@databricks/appkit-ui/react" {
           sem_interesse: number;
           /** @sqlType BIGINT */
           nao_atendeu: number;
+          /** @sqlType DOUBLE */
+          receita_fechada: number;
+          /** @sqlType DOUBLE */
+          receita_aberta: number;
+          /** @sqlType DOUBLE */
+          receita_esperada: number;
+          /** @sqlType TIMESTAMP */
+          ultimo_retorno_em: string;
         }>;
       };
     fila: {

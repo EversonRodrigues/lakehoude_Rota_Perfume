@@ -25,5 +25,5 @@ resources:
         A fila da semana lida pela otica de quem decide: quanto ela vale, quanto
         o modelo ganha de ligar as cegas e o que aconteceu depois da ligacao.
       warehouse_id: ${var.warehouse_id}
-      parent_path: /Workspace/Users/everson101288@gmail.com/genie
+      parent_path: /Workspace/Users/${var.workspace_user}/genie
       file_path: ./direcao.geniespace.json

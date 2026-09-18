@@ -20,6 +20,10 @@ export default tseslint.config(
       // que a ferramenta reescreve a cada build so produz erro que ninguem
       // pode corrigir -- e ainda esconde os erros reais no meio do ruido.
       'shared/appkit-types/**',
+      // Script de setup em Node puro, fora dos tsconfig do app. Sem isso o
+      // eslint com type-checking para com "was not found by the project
+      // service" -- um erro sobre configuracao, nao sobre o codigo.
+      'scripts/**',
     ],
   },
 
