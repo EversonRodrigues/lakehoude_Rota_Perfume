@@ -124,8 +124,11 @@ actually fire, change the Volume and run the second task alone:
   `HistGradientBoostingClassifier`, registers it at
   `gold.propensao_compra` in Unity Catalog with alias `@prod`, and writes
   `gold.score_propensao`, `gold.modelo_metricas`, `gold.calibragem_holdout`.
-  Measured: AUC **0.8816**, `lift_top200` **4.15×**, **84** of the top 200 bought
-  against 20 at random. Three `assert`s stop the task — including `auc < 0.99`,
+ Since the calibration pass it also
+  **compares `cru` / `sigmoid` / `isotonic` and picks by Brier** among those
+  that did not lose AUC. Measured: calibration **sigmoid**, AUC **0.8853**,
+  Brier **0.0705** (against **0.0775** uncalibrated), `lift_top200` **4.44×**,
+  **90** of the top 200 bought against 20 at random. Three `assert`s stop the task — including `auc < 0.99`,
   because leakage arrives as praise, not as an error.
 - `src/ml/11-fila.sql` (task `ml_fila`, `depends_on` `ml_modelo`) — the last mile:
   `gold.fila_semanal` (200 calls with name, a Portuguese `motivo` and what to
@@ -162,18 +165,34 @@ number is right and still says the wrong thing. The audit is written up as
   the warehouse), and the word "Oferecer" now appears only when there is stock.
   After: **0 of 200**, 192 offering confirmed stock, 1 with nothing available.
 
-**The finer cuts exposed something the quartile was hiding: the model orders
-better than it estimates.** On the old quartile the top band predicted 0.3009
-and delivered 0.3011, which looked like perfect calibration — it was an average
-over scores from 0.04 to 0.98 cancelling out. On the new bands the measured rate
-still rises monotonically (4.0% → 23.3% → 39.5% → 48.9%, so the ordering and the
-4.15× lift stand), but `Muito quente` predicts **0.6942** and converts **0.4894**
-(n=47). Consequence: anything multiplying score by money — `receita_esperada =
-SUM(score * ticket_medio)` — inherits that optimism and is an estimate **on the
-high side**. Calibrating (`CalibratedClassifierCV`, isotonic, on a held-out
-slice) is the open item; until then both Genie spaces are instructed to use the
-score to prioritise and `vezes_base` to explain, and never to sell a score as a
-probability.
+**The finer cuts exposed something the quartile was hiding, and it has since
+been fixed.** On the old quartile the top band predicted 0.3009 and delivered
+0.3011 — perfect-looking calibration that was really an average over scores from
+0.04 to 0.98 cancelling out. On the new bands the top band predicted **0.6942**
+and converted **0.4894**: the model ordered well and estimated badly, which does
+not touch `lift_top200` (pure ranking) but inflates everything that multiplies
+score by money.
+
+**The fix was to make calibration a measured choice, not an opinion.**
+`10-modelo.py` now fits three candidates — `cru`, `sigmoid`, `isotonic`, the
+last two via `CalibratedClassifierCV(cv=5)` so the curve is always fitted on a
+fold the model did not see — and keeps **the lowest Brier among those within
+`TOLERANCIA_AUC = 0.01` of the uncalibrated AUC**. Brier is the point: it is the
+metric that sees calibration, and AUC cannot, because AUC is invariant to every
+monotone transform. The rule picked **sigmoid**; a fourth `assert` fails the task
+if calibration makes Brier worse, which is the signature of a curve overfitting
+a fold.
+
+Measured after, on the same holdout: the top band predicts **0.486** and converts
+**0.500** (ratio 0.97, was 1.42), rates still rise monotonically (2.0% → 12.1% →
+35.8% → 50.0%), AUC went **0.8816 → 0.8853** and `lift_top200` **4.15× → 4.44×**
+(90 of 200 instead of 84 — the out-of-fold ranking now comes from the estimator
+that actually ships). **The queue's expected revenue fell from R$ 556,423.71 to
+R$ 388,987.57, −30%** — that gap was the optimism, and it had been on the
+director's screen. The band mix moved with it: **139 Quente / 61 Muito quente**,
+where the uncalibrated scores said 59 / 141. It is still called an estimate,
+because a sum of probabilities times a historical ticket is not an invoiced
+order.
 
 - `resources/dashboard-comercial.lvdash.json` + `resources/dashboard.dashboard.yml`
   (resource `dashboards.comercial`) — the AI/BI dashboard **as code**, deployed by
@@ -211,8 +230,9 @@ probability.
   `Perguntar` (the Genie space embedded, with the signed-in e-mail from
   `GET /api/quem-sou` and a permanent AI-disclosure note). Four queries in
   `config/queries/`: `kpis_semana`, `vendedores`, `fila`, `acompanhamento`.
-  Measured live: **200 contacts, 36 sellers, R$ 556.423,71 expected, 4,15× lift,
-  84/200, 0 returns**. First deploy **4m27s**, redeploy **1m19s**.
+  Measured live: **200 contacts, 36 sellers, R$ 388.987,57 expected, 4,44× lift,
+  90/200, 0 returns** (the expected figure read R$ 556.423,71 before the model
+  was calibrated). First deploy **4m27s**, redeploy **1m19s**.
 - **Night 4's third deliverable closed the loop**: a third screen
   `Acompanhamento` (`/acompanhamento`, reading `acompanhamento.sql`) and the
   app's **only write path** —

@@ -292,8 +292,9 @@ quebrou.
 | **191.080** | linhas em `fato_vendas` | contra 197.724 itens na silver — a diferença são os 6.644 itens dos 957 pedidos cancelados |
 | **≈ 6,9** | `COUNT(*) / COUNT(DISTINCT pedido_id)` | se ler ≈13,8, um join duplicou linhas |
 | **10,12%** | taxa base | quanto da base compra em 7 dias sem ninguém ligar |
-| **0,8816** | AUC do modelo | |
-| **4,15×** | lift no top 200 | **84** dos 200 compraram, contra 20 ao acaso |
+| **0,8853** | AUC do modelo | |
+| **0,0705** | Brier do modelo | contra **0,0775** sem calibrar — é a métrica que enxerga calibragem, e AUC não |
+| **4,44×** | lift no top 200 | **90** dos 200 compraram, contra 20 ao acaso |
 | **36** | vendedores na fila | por `vendedor_id`; por nome dá 35, e some uma pessoa |
 
 Duas armadilhas escondidas nesses números:

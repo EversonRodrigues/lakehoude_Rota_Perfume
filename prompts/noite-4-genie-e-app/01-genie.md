@@ -28,6 +28,11 @@ existe:**
 | `gold.fila_semanal` | 200 linhas, 36 vendedores — é o assunto principal do space |
 | `gold.score_propensao` | a nota de **todos** os clientes, não só dos 200 |
 | `gold.modelo_metricas` | a última versão tem `lift_top200` = **4,15** e `acertos_top200` = **84** |
+
+> **Números medidos antes da calibragem do modelo.** A revisão pós-deploy
+> ([noite 3, prompt 4](../noite-3-machine-learning/04-revisao-do-modelo.md))
+> calibrou o score e eles mudaram: lift **4,44×**, **90** de 200, receita
+> esperada **R$ 388.987,57**. O texto abaixo é o da noite, e fica como está.
 | `gold.dim_cliente` | achar pela razão social o cliente que não está na fila |
 
 O que **não** existe ainda: `gold.retorno_ligacao` e o segundo Genie space.

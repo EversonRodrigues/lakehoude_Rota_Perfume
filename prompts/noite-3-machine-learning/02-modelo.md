@@ -202,6 +202,10 @@ Está impresso na saída da tarefa. Leia em voz alta, na ordem:
 | "ligue para quem está atrasado" (`atraso_relativo`) | **0,7842** | **1** |
 | **o modelo** | **0,8816** | **84** — 4,15× |
 
+> **Este modelo ainda não era calibrado.** Ele ordenava bem e estimava mal, e
+> isso só apareceu depois, no [prompt 4](04-revisao-do-modelo.md). Com a
+> calibragem: AUC **0,8853**, **90** — **4,44×**, Brier **0,0705**.
+
 > **Valores medidos neste workspace**, `seed 42`, corte `2026-08-01`, janela de
 > 7 dias, 20 features. A referência do material original (~0,37 · ~0,62 · ~0,85
 > · 75 acertos) foi medida fora do Databricks com 12 features — a ordem de

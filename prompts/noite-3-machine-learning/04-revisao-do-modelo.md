@@ -3,9 +3,10 @@
 > **Antes de colar:** troque `<PERFIL>` e `<WAREHOUSE_ID>` pelos valores do seu
 > ambiente — a tabela está em [prompts/README.md](../README.md#as-variáveis).
 
-**Entrega:** duas correções em `gold.score_propensao` e `gold.fila_semanal`,
-provadas com número antes e depois, mais um teste novo que impede a volta de
-uma delas.
+**Entrega:** três correções em `gold.score_propensao` e `gold.fila_semanal` —
+duas vindas de perguntas de quem usa, a terceira descoberta pela auditoria das
+duas primeiras — provadas com número antes e depois, mais dois testes novos que
+impedem a volta delas.
 
 > Este prompt não nasceu de um plano de aula. Nasceu de duas perguntas feitas
 > depois que tudo já estava no ar: *"por que um cliente com score 0,45 aparece
@@ -150,6 +151,87 @@ denominador andam juntos ou o número engana.
 
 ---
 
+## Calibrar — e por que Brier, e não AUC
+
+Sobrou a terceira correção: **o modelo ordenava melhor do que estimava.** Isso
+não toca o `lift_top200`, que só olha a ordem, mas inflava tudo que multiplica
+score por dinheiro — e a receita esperada da fila estava na tela do diretor.
+
+**A escolha do método virou código, não opinião:**
+
+```python
+TOLERANCIA_AUC = 0.01
+
+for metodo in ("cru", "sigmoid", "isotonic"):
+    est = novo_estimador(metodo).fit(X_tr, y_tr)   # CalibratedClassifierCV(cv=5)
+    ...
+
+elegiveis = {k: v for k, v in candidatos.items() if v["auc"] >= auc_cru - TOLERANCIA_AUC}
+calibragem_escolhida = min(elegiveis, key=lambda k: elegiveis[k]["brier"])
+```
+
+Três coisas para levar embora:
+
+- **`CalibratedClassifierCV(cv=5)` calibra sem vazar.** Ele treina cinco modelos
+  e ajusta a curva de cada um no fold que ele *não* viu. Calibrar no mesmo dado
+  do fit devolve uma curva linda e mentirosa — e o holdout `X_te` continua
+  intocado, para a medição final valer alguma coisa.
+- **Brier, nunca AUC.** AUC é **invariante a qualquer transformação monótona**,
+  e calibragem é exatamente isso: AUC não consegue enxergar a diferença. Brier é
+  o erro quadrático da probabilidade — é a métrica que enxerga.
+- **Calibragem não pode custar ordenação.** A fila é ordenação. Por isso o filtro
+  de AUC vem antes do critério de Brier, e não o contrário.
+
+Venceu **sigmoid** (Platt), não isotônica — com ~214 positivos no treino, a
+isotônica tem dado demais para ajustar e ruído de sobra. Um quarto `assert`
+derruba a tarefa se calibrar piorar o Brier, que é a assinatura da curva
+sobreajustando o fold.
+
+```bash
+databricks bundle deploy --target dev --profile <PERFIL>
+databricks jobs run-now --profile <PERFIL> --json '{"job_id":<JOB_ID>,"only":["ml_modelo"]}'
+databricks jobs run-now --profile <PERFIL> --json '{"job_id":<JOB_ID>,"only":["ml_fila"]}'
+databricks jobs run-now --profile <PERFIL> --json '{"job_id":<JOB_ID>,"only":["auditoria_de_metadado"]}'
+```
+
+### A calibragem remedida
+
+| faixa | clientes | previsto | real | previsto/real |
+|---|---|---|---|---|
+| Fria | 459 | 0,0326 | 0,0196 | 1,66 |
+| Morna | 124 | 0,1465 | 0,1210 | 1,21 |
+| Quente | 95 | 0,2826 | 0,3579 | 0,79 |
+| **Muito quente** | **26** | **0,4860** | **0,5000** | **0,97** |
+
+A ponta de cima saiu de **1,42** para **0,97**. A taxa medida continua subindo
+faixa a faixa (2,0% → 12,1% → 35,8% → 50,0%), então a ordenação não se perdeu.
+
+### O placar
+
+| | Antes | Depois |
+|---|---|---|
+| calibragem | nenhuma | **sigmoid** |
+| Brier no holdout | 0,0775 | **0,0705** |
+| AUC | 0,8816 | **0,8853** |
+| `lift_top200` | 4,15× | **4,44×** |
+| `acertos_top200` | 84 | **90** |
+| faixa "Muito quente": previsto vs real | 0,6942 / 0,4894 | **0,4860 / 0,5000** |
+| receita esperada da fila | R$ 556.423,71 | **R$ 388.987,57** |
+| mix da fila | 59 Quente / 141 Muito quente | **139 / 61** |
+
+**A receita esperada caiu 30%, e essa queda é o resultado.** Aquele pedaço era
+otimismo do modelo, e estava na tela de quem decide. `lift_top200` subiu junto
+porque o `cross_val_predict` passou a usar **o mesmo estimador que vai para
+produção** — medir o lift de um modelo e publicar outro é testar o freio de
+outro carro.
+
+Continua sendo **estimativa**, e o Genie continua obrigado a dizer a palavra:
+soma de probabilidade vezes ticket histórico não é pedido faturado.
+
+---
+
+---
+
 ## Rodar e conferir
 
 ```bash
@@ -167,7 +249,7 @@ databricks jobs run-now --profile <PERFIL> --json '{"job_id":<JOB_ID>,"only":["a
 | O que | Antes | Depois |
 |---|---|---|
 | linhas da fila mandando oferecer SKU sem saldo | **39** | **0** |
-| faixas distintas dentro da fila | **1** (`Muito quente`, 200) | **2** (`Quente` 59, `Muito quente` 141) |
+| faixas distintas dentro da fila | **1** (`Muito quente`, 200) | **2** (`Quente` 139, `Muito quente` 61) |
 | `auditoria_de_metadado` com a coluna `vezes_base` nova | — | verde |
 
 E o teste novo, que prende a correção do estoque, em `src/ml/11-fila.sql`:
@@ -191,6 +273,10 @@ não é alarme falso — é promessa que o depósito não paga.
 | **Calibragem agregada demais** | previsto bate com real "perfeitamente" | refine os cortes; média grossa cancela erro de sinais opostos |
 | **Regra de negócio só no texto** | o `CASE` avisa, mas o `ORDER BY` já decidiu | a regra entra em **quem escolhe**, não em quem descreve |
 | **Aviso no fim da frase** | `Oferecer X -- ATENCAO: ...` | mude o **verbo**; ressalva depois da ordem ninguém lê |
+| **Medir calibragem com AUC** | AUC não muda depois de calibrar | AUC é invariante a transformação monótona; use **Brier** |
+| **Calibrar no dado do fit** | curva perfeita que não se sustenta | `CalibratedClassifierCV(cv=5)` ajusta no fold que o modelo não viu |
+| **Isotônica com poucos positivos** | Brier piora em vez de melhorar | compare com sigmoid e deixe a medida escolher |
+| **Medir o lift de um modelo e publicar outro** | o número não bate depois | `cross_val_predict` no **mesmo** estimador que vai para produção |
 | **`--json` com argumento posicional** | `no positional arguments are allowed` | `job_id` vai **dentro** do JSON, não antes dele |
 | **Acento e `█` no console do Windows** | `UnicodeEncodeError: 'charmap' codec` | escreva a consulta num arquivo UTF-8 e rode com `-f arquivo.sql` |
 
@@ -198,11 +284,11 @@ não é alarme falso — é promessa que o depósito não paga.
 
 ## O que ficou em aberto
 
-O modelo **ordena melhor do que estima**. Isso não afeta o `lift_top200`, que só
-depende da ordem, mas afeta todo número que multiplica o score por dinheiro: a
-receita esperada da fila (`SUM(score * ticket_medio)`) herda o otimismo da ponta
-de cima e é **estimativa por cima**. O conserto é calibrar o modelo
-(`CalibratedClassifierCV`, isotônica, num pedaço separado do treino) e remedir a
-tabela de calibragem. Fica para a próxima rodada — e está escrito nas instruções
-dos dois Genie spaces, para que nenhuma resposta venda o score como promessa
-enquanto isso não acontecer.
+A faixa **Fria** ainda estima 1,66× acima do medido (0,0326 contra 0,0196). Em
+valor absoluto é 1,3 ponto percentual e não muda decisão nenhuma — ninguém liga
+para a faixa fria —, mas é o lembrete de que calibragem é local: ela acertou
+onde foi medida e cobrada, a ponta de cima.
+
+A amostra da faixa de cima no holdout é **26 clientes**. É pouco para cravar
+0,486 contra 0,500 como se fosse precisão de três casas; o que a medida sustenta
+é que o viés sistemático de 1,42× sumiu, não que o número esteja exato.

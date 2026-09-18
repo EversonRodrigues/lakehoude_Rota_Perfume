@@ -23,9 +23,10 @@ import pandas as pd
 from databricks.sdk import WorkspaceClient
 from mlflow.tracking import MlflowClient
 from pyspark.sql import functions as F
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.inspection import permutation_importance
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import brier_score_loss, roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_val_predict, train_test_split
 
 # COMMAND ----------
@@ -118,9 +119,71 @@ def novo_modelo() -> HistGradientBoostingClassifier:
     return HistGradientBoostingClassifier(random_state=SEMENTE)
 
 
-modelo = novo_modelo().fit(X_tr, y_tr)
-auc = float(roc_auc_score(y_te, modelo.predict_proba(X_te)[:, 1]))
+def novo_estimador(metodo: str):
+    """O que vai para producao. `cru` e o gradient boosting sozinho.
+
+    CALIBRAR SEM VAZAR: `CalibratedClassifierCV(cv=5)` treina cinco modelos e
+    ajusta a curva de cada um no fold que ele NAO viu. Calibrar no mesmo dado do
+    fit devolveria uma curva linda e mentirosa -- e o holdout X_te continua
+    intocado, para a medicao final valer alguma coisa.
+    """
+    if metodo == "cru":
+        return novo_modelo()
+    return CalibratedClassifierCV(novo_modelo(), method=metodo, cv=5)
+
+
+# POR QUE ESTA SECAO EXISTE.
+#
+# O modelo ordenava bem e estimava mal, e o quartil antigo escondia isso: a
+# faixa de cima agregava score 0,04 com 0,98 e a media batia com a taxa medida
+# por acaso. Com cortes finos apareceu -- a faixa "Muito quente" previa 0,6942 e
+# convertia 0,4894.
+#
+# Isso nao afeta `lift_top200`, que so olha a ORDEM. Afeta todo numero que
+# multiplica score por dinheiro: `SUM(score * ticket_medio)`, a receita esperada
+# que o diretor le na tela, saia inflada.
+#
+# A ESCOLHA E POR MEDIDA, NAO POR GOSTO. Brier score e o erro quadratico da
+# probabilidade: e a metrica que enxerga calibragem, e AUC nao enxerga (AUC nao
+# muda com transformacao monotona nenhuma). A regra abaixo esta escrita como
+# codigo de proposito: fica o de menor Brier ENTRE os que nao perderam poder de
+# ordenar. Calibragem que custa ordenacao nao serve -- a fila e ordenacao.
+TOLERANCIA_AUC = 0.01
+
+candidatos = {}
+for metodo in ("cru", "sigmoid", "isotonic"):
+    est = novo_estimador(metodo).fit(X_tr, y_tr)
+    p_te = est.predict_proba(X_te)[:, 1]
+    topo = p_te >= 4 * taxa_base  # a faixa "Muito quente", onde o erro doia
+    candidatos[metodo] = {
+        "estimador": est,
+        "auc": float(roc_auc_score(y_te, p_te)),
+        "brier": float(brier_score_loss(y_te, p_te)),
+        "topo_previsto": float(p_te[topo].mean()) if topo.any() else float("nan"),
+        "topo_real": float(y_te.to_numpy()[topo].mean()) if topo.any() else float("nan"),
+        "topo_n": int(topo.sum()),
+    }
+
+print(f"{'metodo':<10} {'AUC':>7} {'Brier':>8} {'topo previsto':>14} {'topo real':>10} {'n':>5}")
+for metodo, m in candidatos.items():
+    print(
+        f"{metodo:<10} {m['auc']:>7.4f} {m['brier']:>8.4f} "
+        f"{m['topo_previsto']:>14.4f} {m['topo_real']:>10.4f} {m['topo_n']:>5}"
+    )
+
+auc_cru = candidatos["cru"]["auc"]
+elegiveis = {k: v for k, v in candidatos.items() if v["auc"] >= auc_cru - TOLERANCIA_AUC}
+calibragem_escolhida = min(elegiveis, key=lambda k: elegiveis[k]["brier"])
+
+modelo = candidatos[calibragem_escolhida]["estimador"]
+auc = candidatos[calibragem_escolhida]["auc"]
+brier = candidatos[calibragem_escolhida]["brier"]
+brier_cru = candidatos["cru"]["brier"]
+
+print()
+print(f"escolhido: {calibragem_escolhida}")
 print(f"AUC do modelo no holdout: {auc:.4f}")
+print(f"Brier: {brier:.4f}  (sem calibragem: {brier_cru:.4f})")
 
 # COMMAND ----------
 
@@ -134,7 +197,9 @@ print(f"AUC do modelo no holdout: {auc:.4f}")
 # COMMAND ----------
 
 folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEMENTE)
-score_oof = cross_val_predict(novo_modelo(), X, y, cv=folds, method="predict_proba")[:, 1]
+# O estimador aqui e o MESMO que vai para producao, calibragem incluida: medir
+# o lift de um modelo e publicar outro e como testar o freio de outro carro.
+score_oof = cross_val_predict(novo_estimador(calibragem_escolhida), X, y, cv=folds, method="predict_proba")[:, 1]
 
 topo = np.argsort(-score_oof)[:TOP_N]
 acertos_top200 = int(y.iloc[topo].sum())
@@ -184,6 +249,7 @@ with mlflow.start_run(run_name=f"propensao_{referencia_treino}") as run:
     mlflow.log_params(
         {
             "algoritmo": "HistGradientBoostingClassifier",
+            "calibragem": calibragem_escolhida,
             "random_state": SEMENTE,
             "n_features": len(FEATURES),
             "referencia": str(referencia_treino),
@@ -197,6 +263,8 @@ with mlflow.start_run(run_name=f"propensao_{referencia_treino}") as run:
             "acertos_top200": acertos_top200,
             "taxa_base": taxa_base,
             "melhor_baseline_auc": melhor_baseline,
+            "brier": brier,
+            "brier_sem_calibragem": brier_cru,
         }
     )
     # O serverless tem MLflow 2.x: `artifact_path`, nunca o `name=` do MLflow 3.
@@ -212,7 +280,7 @@ print(f"registrado: {MODELO_UC} versao {versao}, alias @prod")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6 · Os tres testes que interrompem a tarefa
+# MAGIC ## 6 · Os quatro testes que interrompem a tarefa
 # MAGIC
 # MAGIC O segundo e o mais importante da noite: **este job quebra se o resultado
 # MAGIC ficar bom demais**. E a unica defesa que funciona contra vazamento, porque
@@ -231,11 +299,20 @@ assert auc < 0.99, (
     "alguma feature esta contando o futuro. Refaca o corte antes de confiar neste numero."
 )
 
+# Calibrar nao pode PIORAR a probabilidade. Se piorou, o metodo escolhido esta
+# ajustando ruido do fold e nao a curva -- e ai e melhor publicar o cru, com a
+# instrucao de que o score so ordena, do que publicar um numero pior fingindo
+# que e melhor.
+assert brier <= brier_cru, (
+    f"A calibragem '{calibragem_escolhida}' piorou o Brier: {brier:.4f} contra {brier_cru:.4f} do cru. "
+    "Isso e overfit da curva de calibragem, quase sempre por poucos positivos no fold."
+)
+
 assert lift_top200 >= 2.5, (
     f"lift_top200 de {lift_top200:.2f}x nao paga o projeto: a fila precisa valer bem mais que ligar no aleatorio."
 )
 
-print("os tres testes passaram.")
+print("os quatro testes passaram.")
 
 # COMMAND ----------
 
@@ -258,7 +335,11 @@ referencia_score = score_pdf["_referencia"].iloc[0]
 
 # Le a ordem das colunas do PROPRIO modelo: a ordem da tabela pode mudar sem
 # aviso, e um score com colunas trocadas nao da erro -- da numero errado.
-colunas = list(modelo_prod.feature_names_in_)
+# `CalibratedClassifierCV` e um meta-estimador: ele repassa `feature_names_in_`,
+# mas o fallback fica aqui porque um score com colunas fora de ordem nao da erro
+# -- da numero errado, silenciosamente.
+colunas = list(getattr(modelo_prod, "feature_names_in_", FEATURES))
+assert set(colunas) == set(FEATURES), "o modelo registrado espera outras colunas"
 score_pdf["score"] = modelo_prod.predict_proba(score_pdf[colunas].astype("float64"))[:, 1]
 
 saida = pd.DataFrame(
@@ -326,6 +407,9 @@ metricas = pd.DataFrame(
             "lift_top200": lift_top200,
             "acertos_top200": acertos_top200,
             "taxa_base": taxa_base,
+            "calibragem": calibragem_escolhida,
+            "brier": brier,
+            "brier_sem_calibragem": brier_cru,
             "auc_baseline_recencia": baselines["-recencia_dias  (ligue para quem comprou recentemente)"],
             "auc_baseline_valor": baselines["valor_total     (ligue para quem compra mais)"],
             "auc_baseline_atraso": baselines["atraso_relativo (ligue para quem esta atrasado)"],
@@ -349,9 +433,7 @@ holdout = pd.DataFrame({"score": modelo.predict_proba(X_te)[:, 1], "comprou": y_
 # e o esperado: pouca gente mesmo tem 4x a chance media.
 holdout["faixa"] = pd.cut(
     holdout["score"],
-    bins=[-float("inf")]
-    + [CORTES[f] * taxa_base for f in ("Morna", "Quente", "Muito quente")]
-    + [float("inf")],
+    bins=[-float("inf")] + [CORTES[f] * taxa_base for f in ("Morna", "Quente", "Muito quente")] + [float("inf")],
     labels=["Fria", "Morna", "Quente", "Muito quente"],
     right=False,
 )
@@ -395,6 +477,9 @@ COMENTARIOS = {
         "lift_top200": "Quantas vezes a fila de 200 supera o acaso. E a metrica que responde o diretor.",
         "acertos_top200": "Quantos dos 200 melhores compraram de fato, medido out-of-fold.",
         "taxa_base": "Fracao de clientes que compra na semana sem modelo nenhum.",
+        "calibragem": "Metodo de calibragem escolhido por medida: cru, sigmoid ou isotonic. Vence o de menor Brier entre os que nao perderam AUC.",
+        "brier": "Brier score no holdout do modelo publicado. Erro quadratico da PROBABILIDADE -- e a metrica que enxerga calibragem, que AUC nao enxerga.",
+        "brier_sem_calibragem": "Brier do mesmo modelo sem calibrar. Existe para a comparacao ficar na tabela, nao so no log do treino.",
         "auc_baseline_recencia": "AUC de ordenar por -recencia_dias. Abaixo de 0,5 significa que a intuicao esta invertida.",
         "auc_baseline_valor": "AUC de ordenar por valor_total.",
         "auc_baseline_atraso": "AUC de ordenar por atraso_relativo.",
