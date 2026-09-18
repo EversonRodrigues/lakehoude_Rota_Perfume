@@ -125,10 +125,11 @@ actually fire, change the Volume and run the second task alone:
   `gold.propensao_compra` in Unity Catalog with alias `@prod`, and writes
   `gold.score_propensao`, `gold.modelo_metricas`, `gold.calibragem_holdout`.
  Since the calibration pass it also
-  **compares `cru` / `sigmoid` / `isotonic` and picks by Brier** among those
-  that did not lose AUC. Measured: calibration **sigmoid**, AUC **0.8853**,
-  Brier **0.0705** (against **0.0775** uncalibrated), `lift_top200` **4.44×**,
-  **90** of the top 200 bought against 20 at random. Three `assert`s stop the task — including `auc < 0.99`,
+  **compares `cru` / `sigmoid` / `isotonic` on AUC, Brier and ECE** and writes
+  the whole comparison to `gold.calibragem_candidatos`. Measured: calibration
+  **isotonic**, AUC **0.8840**, Brier **0.0709** (against **0.0775**
+  uncalibrated), ECE **0.0118** (against **0.0494**), `lift_top200` **4.20×**,
+  **85** of the top 200 bought against 20 at random. Three `assert`s stop the task — including `auc < 0.99`,
   because leakage arrives as praise, not as an error.
 - `src/ml/11-fila.sql` (task `ml_fila`, `depends_on` `ml_modelo`) — the last mile:
   `gold.fila_semanal` (200 calls with name, a Portuguese `motivo` and what to
@@ -183,16 +184,34 @@ monotone transform. The rule picked **sigmoid**; a fourth `assert` fails the tas
 if calibration makes Brier worse, which is the signature of a curve overfitting
 a fold.
 
-Measured after, on the same holdout: the top band predicts **0.486** and converts
-**0.500** (ratio 0.97, was 1.42), rates still rise monotonically (2.0% → 12.1% →
-35.8% → 50.0%), AUC went **0.8816 → 0.8853** and `lift_top200` **4.15× → 4.44×**
-(90 of 200 instead of 84 — the out-of-fold ranking now comes from the estimator
-that actually ships). **The queue's expected revenue fell from R$ 556,423.71 to
-R$ 388,987.57, −30%** — that gap was the optimism, and it had been on the
-director's screen. The band mix moved with it: **139 Quente / 61 Muito quente**,
-where the uncalibrated scores said 59 / 141. It is still called an estimate,
-because a sum of probabilities times a historical ticket is not an invoiced
-order.
+**Brier alone was not enough, and the rule had to grow a second metric.** Brier
+is a *squared* error, so being wrong by 0.03 against 0.02 in the cold band costs
+almost nothing even though the relative error is 66% — and sigmoid, the first
+winner, did exactly that (`Fria` predicted 0.0326 against 0.0196 measured, ratio
+**1.66**). **ECE** — mean |predicted − measured| across the four bands, weighted
+by band size, *not* squared — is the metric that sees the cold end. The rule is
+now: keep AUC within `TOLERANCIA_AUC`, take the best Brier, and among candidates
+within **1% of that Brier** (a technical tie) pick the **lowest ECE**. That
+flipped the winner from `sigmoid` to `isotonic`.
+
+Measured on the same holdout, `isotonic` versus no calibration — predicted /
+measured per band: `Fria` **0.0173 / 0.0157**, `Morna` 0.1523 / 0.1176, `Quente`
+0.2892 / 0.3077, `Muito quente` 0.4694 / 0.5714. ECE **0.0494 → 0.0118**, four
+times better, and the cold band's ratio went **0.25 → 1.10**. **The queue's
+expected revenue fell from R$ 556,423.71 (uncalibrated) to R$ 352,868.13** —
+that gap was optimism, and it had been on the director's screen. Band mix is now
+**160 Quente / 40 Muito quente** against 59 / 141 uncalibrated.
+
+**`lift_top200` reads 4.20× against sigmoid's 4.44×, and that is noise, not a
+loss.** The two estimators rank essentially identically (AUC 0.8840 vs 0.8853
+over 2,816 clients); the lift is a count out of 200 draws, whose standard
+deviation is around 7 — 85 against 90 sits inside it. Checked the obvious
+objection too: isotonic is a step function and could quantise the score enough
+to make the top-200 cut arbitrary, but at the cut there are **199 clients
+strictly above and 1 tied**, so the queue is well determined. The number is
+still an estimate: a sum of probabilities times a historical ticket is not an
+invoiced order. And `Muito quente` holds only **14** holdout clients — enough to
+say the systematic bias is gone, not enough to defend a third decimal.
 
 - `resources/dashboard-comercial.lvdash.json` + `resources/dashboard.dashboard.yml`
   (resource `dashboards.comercial`) — the AI/BI dashboard **as code**, deployed by
@@ -230,8 +249,8 @@ order.
   `Perguntar` (the Genie space embedded, with the signed-in e-mail from
   `GET /api/quem-sou` and a permanent AI-disclosure note). Four queries in
   `config/queries/`: `kpis_semana`, `vendedores`, `fila`, `acompanhamento`.
-  Measured live: **200 contacts, 36 sellers, R$ 388.987,57 expected, 4,44× lift,
-  90/200, 0 returns** (the expected figure read R$ 556.423,71 before the model
+  Measured live: **200 contacts, 36 sellers, R$ 352.868,13 expected, 4,20× lift,
+  85/200, 0 returns** (the expected figure read R$ 556.423,71 before the model
   was calibrated). First deploy **4m27s**, redeploy **1m19s**.
 - **Night 4's third deliverable closed the loop**: a third screen
   `Acompanhamento` (`/acompanhamento`, reading `acompanhamento.sql`) and the

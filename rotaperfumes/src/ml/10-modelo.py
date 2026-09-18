@@ -143,47 +143,93 @@ def novo_estimador(metodo: str):
 # multiplica score por dinheiro: `SUM(score * ticket_medio)`, a receita esperada
 # que o diretor le na tela, saia inflada.
 #
-# A ESCOLHA E POR MEDIDA, NAO POR GOSTO. Brier score e o erro quadratico da
-# probabilidade: e a metrica que enxerga calibragem, e AUC nao enxerga (AUC nao
-# muda com transformacao monotona nenhuma). A regra abaixo esta escrita como
-# codigo de proposito: fica o de menor Brier ENTRE os que nao perderam poder de
-# ordenar. Calibragem que custa ordenacao nao serve -- a fila e ordenacao.
+# A ESCOLHA E POR MEDIDA, NAO POR GOSTO. A regra esta escrita como codigo de
+# proposito, e ela mudou uma vez: comecou so com Brier e passou a olhar tambem o
+# ECE. O motivo esta na aritmetica do Brier -- ele e o erro QUADRATICO, entao
+# errar 0,03 contra 0,02 na faixa fria custa quase nada, por mais que o erro
+# RELATIVO seja de 66%. Brier sozinho nao ve a ponta de baixo; ECE ve.
 TOLERANCIA_AUC = 0.01
+
+# Os cortes da faixa moram aqui em cima porque a medicao de calibragem e a
+# tabela `score_propensao` TEM que usar os mesmos. Cortes diferentes fazem a
+# calibragem provar uma faixa que ninguem enxerga.
+CORTES = {"Morna": 1.0, "Quente": 2.0, "Muito quente": 4.0}
+FAIXAS = ["Fria", "Morna", "Quente", "Muito quente"]
+
+
+def limites_das_faixas() -> list[float]:
+    return [-float("inf")] + [CORTES[f] * taxa_base for f in ("Morna", "Quente", "Muito quente")] + [float("inf")]
+
+
+def por_faixa(score, alvo) -> pd.DataFrame:
+    """Previsto contra medido, faixa a faixa. E a tabela que o comercial confere."""
+    d = pd.DataFrame({"score": np.asarray(score, dtype=float), "comprou": np.asarray(alvo, dtype=int)})
+    d["faixa"] = pd.cut(d["score"], bins=limites_das_faixas(), labels=FAIXAS, right=False)
+    g = (
+        d.groupby("faixa", observed=True)
+        .agg(clientes=("comprou", "size"), compraram=("comprou", "sum"), score_medio=("score", "mean"))
+        .reset_index()
+    )
+    g["taxa_de_compra"] = g["compraram"] / g["clientes"]
+    g["faixa"] = g["faixa"].astype(str)
+    return g
+
+
+def ece(g: pd.DataFrame) -> float:
+    """Expected Calibration Error: distancia media entre previsto e medido,
+    ponderada pelo tamanho da faixa. Ao contrario do Brier, ele nao eleva o erro
+    ao quadrado -- entao um erro pequeno em valor absoluto numa faixa grande
+    (a fria) aparece, em vez de sumir.
+    """
+    return float((g["clientes"] * (g["score_medio"] - g["taxa_de_compra"]).abs()).sum() / g["clientes"].sum())
+
 
 candidatos = {}
 for metodo in ("cru", "sigmoid", "isotonic"):
     est = novo_estimador(metodo).fit(X_tr, y_tr)
     p_te = est.predict_proba(X_te)[:, 1]
-    topo = p_te >= 4 * taxa_base  # a faixa "Muito quente", onde o erro doia
+    faixas = por_faixa(p_te, y_te)
     candidatos[metodo] = {
         "estimador": est,
+        "faixas": faixas,
         "auc": float(roc_auc_score(y_te, p_te)),
         "brier": float(brier_score_loss(y_te, p_te)),
-        "topo_previsto": float(p_te[topo].mean()) if topo.any() else float("nan"),
-        "topo_real": float(y_te.to_numpy()[topo].mean()) if topo.any() else float("nan"),
-        "topo_n": int(topo.sum()),
+        "ece": ece(faixas),
     }
 
-print(f"{'metodo':<10} {'AUC':>7} {'Brier':>8} {'topo previsto':>14} {'topo real':>10} {'n':>5}")
+print(f"{'metodo':<10} {'AUC':>7} {'Brier':>8} {'ECE':>8}   previsto/medido por faixa")
 for metodo, m in candidatos.items():
-    print(
-        f"{metodo:<10} {m['auc']:>7.4f} {m['brier']:>8.4f} "
-        f"{m['topo_previsto']:>14.4f} {m['topo_real']:>10.4f} {m['topo_n']:>5}"
-    )
+    detalhe = "  ".join(f"{r.faixa[:4]} {r.score_medio:.3f}/{r.taxa_de_compra:.3f}" for r in m["faixas"].itertuples())
+    print(f"{metodo:<10} {m['auc']:>7.4f} {m['brier']:>8.4f} {m['ece']:>8.4f}   {detalhe}")
+
+# A comparacao vira TABELA, e nao so log de treino: daqui a seis meses ninguem
+# reabre a saida desta tarefa, e a pergunta "por que sigmoid e nao isotonic?"
+# volta. A resposta tem que estar consultavel.
+comparacao = pd.concat(
+    [m["faixas"].assign(metodo=k, auc=m["auc"], brier=m["brier"], ece=m["ece"]) for k, m in candidatos.items()]
+)
 
 auc_cru = candidatos["cru"]["auc"]
 elegiveis = {k: v for k, v in candidatos.items() if v["auc"] >= auc_cru - TOLERANCIA_AUC}
-calibragem_escolhida = min(elegiveis, key=lambda k: elegiveis[k]["brier"])
+# Brier primeiro, ECE como desempate DENTRO de um empate tecnico de Brier (1%):
+# quem estima melhor a probabilidade ganha, e entre dois que estimam igual de bem
+# ganha o que erra menos ao longo de TODA a curva, inclusive na ponta fria.
+melhor_brier = min(elegiveis.values(), key=lambda v: v["brier"])["brier"]
+empatados = {k: v for k, v in elegiveis.items() if v["brier"] <= melhor_brier * 1.01}
+calibragem_escolhida = min(empatados, key=lambda k: empatados[k]["ece"])
 
 modelo = candidatos[calibragem_escolhida]["estimador"]
 auc = candidatos[calibragem_escolhida]["auc"]
 brier = candidatos[calibragem_escolhida]["brier"]
 brier_cru = candidatos["cru"]["brier"]
+erro_calibragem = candidatos[calibragem_escolhida]["ece"]
+ece_cru = candidatos["cru"]["ece"]
 
 print()
-print(f"escolhido: {calibragem_escolhida}")
+print(f"escolhido: {calibragem_escolhida}  (empate tecnico de Brier: {sorted(empatados)})")
 print(f"AUC do modelo no holdout: {auc:.4f}")
 print(f"Brier: {brier:.4f}  (sem calibragem: {brier_cru:.4f})")
+print(f"ECE:   {erro_calibragem:.4f}  (sem calibragem: {ece_cru:.4f})")
 
 # COMMAND ----------
 
@@ -265,6 +311,8 @@ with mlflow.start_run(run_name=f"propensao_{referencia_treino}") as run:
             "melhor_baseline_auc": melhor_baseline,
             "brier": brier,
             "brier_sem_calibragem": brier_cru,
+            "ece": erro_calibragem,
+            "ece_sem_calibragem": ece_cru,
         }
     )
     # O serverless tem MLflow 2.x: `artifact_path`, nunca o `name=` do MLflow 3.
@@ -372,8 +420,6 @@ saida = pd.DataFrame(
 # `vezes_base` existe para a faixa nunca aparecer sozinha: um score de 0,45
 # soa baixo ate voce ler que e 4,4x a media da base. O numero e o denominador
 # andam juntos ou o numero engana.
-CORTES = {"Morna": 1.0, "Quente": 2.0, "Muito quente": 4.0}
-
 spark.createDataFrame(saida).createOrReplaceTempView("_score_bruto")
 spark.sql(f"""
     CREATE OR REPLACE TABLE {catalog}.gold.score_propensao AS
@@ -410,6 +456,8 @@ metricas = pd.DataFrame(
             "calibragem": calibragem_escolhida,
             "brier": brier,
             "brier_sem_calibragem": brier_cru,
+            "ece": erro_calibragem,
+            "ece_sem_calibragem": ece_cru,
             "auc_baseline_recencia": baselines["-recencia_dias  (ligue para quem comprou recentemente)"],
             "auc_baseline_valor": baselines["valor_total     (ligue para quem compra mais)"],
             "auc_baseline_atraso": baselines["atraso_relativo (ligue para quem esta atrasado)"],
@@ -424,29 +472,24 @@ spark.createDataFrame(metricas).withColumn("_treinado_em", F.current_timestamp()
 ).saveAsTable(f"{catalog}.gold.modelo_metricas")
 
 # A calibragem e a prova que o comercial confere sozinho, sem saber o que e AUC:
-# a taxa de compra tem que SUBIR da faixa fria para a muito quente.
-holdout = pd.DataFrame({"score": modelo.predict_proba(X_te)[:, 1], "comprou": y_te.to_numpy()})
-# A calibragem TEM que usar os mesmos cortes de gold.score_propensao, senao ela
-# prova uma faixa que ninguem ve. Era `pd.qcut(..., 4)` -- quatro grupos do
-# mesmo tamanho, que e outra coisa: media a ordenacao, nao o significado do
-# rotulo. Com os cortes absolutos os grupos saem de tamanhos diferentes, e isso
-# e o esperado: pouca gente mesmo tem 4x a chance media.
-holdout["faixa"] = pd.cut(
-    holdout["score"],
-    bins=[-float("inf")] + [CORTES[f] * taxa_base for f in ("Morna", "Quente", "Muito quente")] + [float("inf")],
-    labels=["Fria", "Morna", "Quente", "Muito quente"],
-    right=False,
-)
-calibragem = (
-    holdout.groupby("faixa", observed=True)
-    .agg(clientes=("comprou", "size"), compraram=("comprou", "sum"), score_medio=("score", "mean"))
-    .reset_index()
-)
-calibragem["taxa_de_compra"] = calibragem["compraram"] / calibragem["clientes"]
-calibragem["faixa"] = calibragem["faixa"].astype(str)
+# a taxa de compra tem que SUBIR da faixa fria para a muito quente, e o previsto
+# tem que ficar perto do medido em CADA faixa.
+#
+# Mesmos cortes de gold.score_propensao, pela mesma funcao usada na escolha do
+# metodo. Ja foi `pd.qcut(..., 4)` -- quatro grupos do mesmo tamanho, que e outra
+# coisa: media a ordenacao, nao o significado do rotulo. Com cortes absolutos os
+# grupos saem de tamanhos diferentes, e isso e o esperado: pouca gente mesmo tem
+# 4x a chance media.
+calibragem = por_faixa(modelo.predict_proba(X_te)[:, 1], y_te)
 
 spark.createDataFrame(calibragem).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     f"{catalog}.gold.calibragem_holdout"
+)
+
+# A comparacao dos tres candidatos tambem vira tabela: e onde se confere que a
+# escolha foi por medida, e nao por gosto de quem escreveu o notebook.
+spark.createDataFrame(comparacao).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
+    f"{catalog}.gold.calibragem_candidatos"
 )
 
 print(calibragem.to_string(index=False))
@@ -480,6 +523,8 @@ COMENTARIOS = {
         "calibragem": "Metodo de calibragem escolhido por medida: cru, sigmoid ou isotonic. Vence o de menor Brier entre os que nao perderam AUC.",
         "brier": "Brier score no holdout do modelo publicado. Erro quadratico da PROBABILIDADE -- e a metrica que enxerga calibragem, que AUC nao enxerga.",
         "brier_sem_calibragem": "Brier do mesmo modelo sem calibrar. Existe para a comparacao ficar na tabela, nao so no log do treino.",
+        "ece": "Expected Calibration Error do modelo publicado: erro medio de calibragem ao longo de toda a curva, ponderado por tamanho de faixa. Desempata metodos com Brier tecnicamente igual.",
+        "ece_sem_calibragem": "ECE do mesmo modelo sem calibrar.",
         "auc_baseline_recencia": "AUC de ordenar por -recencia_dias. Abaixo de 0,5 significa que a intuicao esta invertida.",
         "auc_baseline_valor": "AUC de ordenar por valor_total.",
         "auc_baseline_atraso": "AUC de ordenar por atraso_relativo.",
@@ -487,6 +532,18 @@ COMENTARIOS = {
         "feature_top1": "Feature nº 1 por importancia de permutacao.",
         "referencia_treino": "Data de corte do dataset de treino.",
         "_treinado_em": "Quando o treino rodou.",
+    },
+    "calibragem_candidatos": {
+        "_tabela": "Os tres candidatos de calibragem (cru, sigmoid, isotonic) medidos no MESMO holdout, faixa a faixa. Existe para a pergunta ''por que este metodo e nao o outro?'' ter resposta consultavel daqui a seis meses, sem reabrir o log do treino.",
+        "metodo": "cru, sigmoid ou isotonic. cru e o gradient boosting sem calibrar.",
+        "faixa": "Mesma faixa de gold.score_propensao: multiplos da taxa base.",
+        "clientes": "Clientes do holdout que este metodo colocou nesta faixa. Muda de metodo para metodo, porque calibrar move o score entre faixas.",
+        "compraram": "Quantos deles compraram na janela de 7 dias.",
+        "score_medio": "Media do score previsto na faixa -- o que o modelo promete.",
+        "taxa_de_compra": "compraram / clientes -- o que aconteceu de verdade.",
+        "auc": "AUC do metodo no holdout. Praticamente igual entre os tres: AUC nao enxerga calibragem.",
+        "brier": "Brier do metodo. Erro QUADRATICO, entao e dominado pelas faixas de score alto.",
+        "ece": "Expected Calibration Error: distancia media entre previsto e medido, ponderada pelo tamanho da faixa e SEM elevar ao quadrado. E a metrica que enxerga a ponta fria, que o Brier deixa passar.",
     },
     "calibragem_holdout": {
         "_tabela": "Taxa de compra por faixa de score no holdout, nos MESMOS cortes de gold.score_propensao. E a prova que o comercial confere sozinho: a taxa tem que SUBIR da faixa fria para a muito quente, e o score medio previsto tem que ficar na mesma ordem de grandeza. Hoje nao bate na ponta de cima: a faixa Muito quente preve 0,69 e converte 0,49 -- o modelo ordena melhor do que estima, e por isso a receita esperada da fila e estimativa por cima.",

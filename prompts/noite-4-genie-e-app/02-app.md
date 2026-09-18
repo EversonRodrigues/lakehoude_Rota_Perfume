@@ -29,8 +29,8 @@ Rodado contra `lakehouse_rotaperfume` no workspace `<HOST_DO_WORKSPACE>`, profil
 
 > **Números medidos antes da calibragem do modelo.** A revisão pós-deploy
 > ([noite 3, prompt 4](../noite-3-machine-learning/04-revisao-do-modelo.md))
-> calibrou o score e eles mudaram: lift **4,44×**, **90** de 200, receita
-> esperada **R$ 388.987,57**. O texto abaixo é o da noite, e fica como está.
+> calibrou o score e eles mudaram: lift **4,20×**, **85** de 200, receita
+> esperada **R$ 352.868,13**. O texto abaixo é o da noite, e fica como está.
 | `gold.retorno_ligacao` | criada no prompt 1, **vazia** — os KPIs de retorno voltam zero |
 | `gold.dim_cliente` | achar pela razão social o cliente que não está na fila |
 | Genie `Rota Perfume · Direção` | criado no prompt 1 — é o que entra na aba *Perguntar* |

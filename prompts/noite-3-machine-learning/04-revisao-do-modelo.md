@@ -170,6 +170,15 @@ elegiveis = {k: v for k, v in candidatos.items() if v["auc"] >= auc_cru - TOLERA
 calibragem_escolhida = min(elegiveis, key=lambda k: elegiveis[k]["brier"])
 ```
 
+> **A regra cresceu uma vez, e o motivo vale mais que a regra.** Ela começou só
+> com Brier e elegeu **sigmoid**. Só que Brier é o erro **ao quadrado**: errar
+> 0,0326 contra 0,0196 na faixa fria custa quase nada, por mais que o erro
+> relativo seja de **66%**. Brier é dominado pelas faixas de score alto e
+> **não enxerga a ponta fria**. Quem enxerga é o **ECE** — a distância média
+> entre previsto e medido nas quatro faixas, ponderada pelo tamanho e *sem*
+> elevar ao quadrado. Com o ECE como desempate, dentro de um empate técnico de
+> 1% de Brier, o vencedor virou **isotonic**.
+
 Três coisas para levar embora:
 
 - **`CalibratedClassifierCV(cv=5)` calibra sem vazar.** Ele treina cinco modelos
@@ -196,34 +205,48 @@ databricks jobs run-now --profile <PERFIL> --json '{"job_id":<JOB_ID>,"only":["a
 
 ### A calibragem remedida
 
-| faixa | clientes | previsto | real | previsto/real |
-|---|---|---|---|---|
-| Fria | 459 | 0,0326 | 0,0196 | 1,66 |
-| Morna | 124 | 0,1465 | 0,1210 | 1,21 |
-| Quente | 95 | 0,2826 | 0,3579 | 0,79 |
-| **Muito quente** | **26** | **0,4860** | **0,5000** | **0,97** |
+Os três candidatos, medidos no mesmo holdout — e a comparação inteira agora
+mora em `gold.calibragem_candidatos`, porque daqui a seis meses a pergunta
+*"por que isotonic e não sigmoid?"* volta e a resposta tem que ser consultável:
 
-A ponta de cima saiu de **1,42** para **0,97**. A taxa medida continua subindo
-faixa a faixa (2,0% → 12,1% → 35,8% → 50,0%), então a ordenação não se perdeu.
+| método | AUC | Brier | **ECE** | Fria prev/real | Muito quente prev/real |
+|---|---|---|---|---|---|
+| cru | 0,8816 | 0,0775 | 0,0494 | 0,0099 / 0,0399 — **0,25** | 0,6942 / 0,4894 — 1,42 |
+| sigmoid | 0,8853 | **0,0705** | 0,0236 | 0,0326 / 0,0196 — **1,66** | 0,4860 / 0,5000 — 0,97 |
+| **isotonic** | 0,8840 | 0,0709 | **0,0118** | **0,0173 / 0,0157 — 1,10** | 0,4694 / 0,5714 — 0,82 |
+
+Repare no que o Brier sozinho teria feito: ele elege **sigmoid**, que é o
+candidato com o **pior** erro na faixa fria dos três calibrados. O ECE cai pela
+metade com isotonic, e a ponta fria sai de 1,66 para **1,10**.
 
 ### O placar
 
 | | Antes | Depois |
 |---|---|---|
-| calibragem | nenhuma | **sigmoid** |
-| Brier no holdout | 0,0775 | **0,0705** |
-| AUC | 0,8816 | **0,8853** |
-| `lift_top200` | 4,15× | **4,44×** |
-| `acertos_top200` | 84 | **90** |
-| faixa "Muito quente": previsto vs real | 0,6942 / 0,4894 | **0,4860 / 0,5000** |
-| receita esperada da fila | R$ 556.423,71 | **R$ 388.987,57** |
-| mix da fila | 59 Quente / 141 Muito quente | **139 / 61** |
+| calibragem | nenhuma | **isotonic** |
+| Brier no holdout | 0,0775 | **0,0709** |
+| **ECE** | 0,0494 | **0,0118** |
+| AUC | 0,8816 | 0,8840 |
+| `lift_top200` | 4,15× | 4,20× |
+| `acertos_top200` | 84 | 85 |
+| faixa "Fria": previsto vs real | 0,0099 / 0,0399 | **0,0173 / 0,0157** |
+| faixa "Muito quente": previsto vs real | 0,6942 / 0,4894 | **0,4694 / 0,5714** |
+| receita esperada da fila | R$ 556.423,71 | **R$ 352.868,13** |
+| mix da fila | 59 Quente / 141 Muito quente | **160 / 40** |
 
-**A receita esperada caiu 30%, e essa queda é o resultado.** Aquele pedaço era
-otimismo do modelo, e estava na tela de quem decide. `lift_top200` subiu junto
-porque o `cross_val_predict` passou a usar **o mesmo estimador que vai para
-produção** — medir o lift de um modelo e publicar outro é testar o freio de
-outro carro.
+**A receita esperada caiu 37%, e essa queda é o resultado.** Aquele pedaço era
+otimismo do modelo, e estava na tela de quem decide.
+
+**E o `lift_top200`?** Contra o sigmoid ele lê 4,20× em vez de 4,44× — e isso é
+**ruído, não perda**. Os dois ordenam praticamente igual (AUC 0,8840 contra
+0,8853, medido sobre 2.816 clientes); o lift é uma contagem em 200 sorteios, cujo
+desvio padrão é ~7, e 85 contra 90 cabe dentro dele. Vale conferir a objeção
+óbvia, porque ela seria fatal: isotônica é **função escada** e poderia empatar
+scores a ponto de o corte dos 200 virar sorteio. No corte medido há **199
+estritamente acima e 1 empatado** — a fila está bem determinada.
+
+O `cross_val_predict` usa **o mesmo estimador que vai para produção**: medir o
+lift de um modelo e publicar outro é testar o freio de outro carro.
 
 Continua sendo **estimativa**, e o Genie continua obrigado a dizer a palavra:
 soma de probabilidade vezes ticket histórico não é pedido faturado.
@@ -284,11 +307,13 @@ não é alarme falso — é promessa que o depósito não paga.
 
 ## O que ficou em aberto
 
-A faixa **Fria** ainda estima 1,66× acima do medido (0,0326 contra 0,0196). Em
-valor absoluto é 1,3 ponto percentual e não muda decisão nenhuma — ninguém liga
-para a faixa fria —, mas é o lembrete de que calibragem é local: ela acertou
-onde foi medida e cobrada, a ponta de cima.
+A faixa **Muito quente** tem **14 clientes** no holdout. É pouco para cravar
+0,4694 contra 0,5714 como se fosse precisão de três casas; o que a medida
+sustenta é que o viés sistemático sumiu ao longo da curva inteira (ECE 0,0118),
+não que cada faixa esteja exata. Por isso a instrução dos dois Genie spaces
+manda dizer essa ressalva quando o número for decisivo.
 
-A amostra da faixa de cima no holdout é **26 clientes**. É pouco para cravar
-0,486 contra 0,500 como se fosse precisão de três casas; o que a medida sustenta
-é que o viés sistemático de 1,42× sumiu, não que o número esteja exato.
+Falta **calibrar a calibragem com mais dado**: as quatro faixas somam 704
+clientes de holdout, e isotônica é flexível o bastante para se ajustar a ruído
+quando o grupo é pequeno. O caminho é validação cruzada aninhada ou um holdout
+maior — o que só vale a pena com mais base do que este projeto tem.

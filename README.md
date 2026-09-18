@@ -332,8 +332,9 @@ quebrou.
 | **≈ 6,9** | `COUNT(*) / COUNT(DISTINCT pedido_id)` | se ler ≈13,8, um join duplicou linhas |
 | **10,12%** | taxa base | quanto da base compra em 7 dias sem ninguém ligar |
 | **0,8853** | AUC do modelo | |
-| **0,0705** | Brier do modelo | contra **0,0775** sem calibrar — é a métrica que enxerga calibragem, e AUC não |
-| **4,44×** | lift no top 200 | **90** dos 200 compraram, contra 20 ao acaso |
+| **0,0709** | Brier do modelo | contra **0,0775** sem calibrar — é a métrica que enxerga calibragem, e AUC não |
+| **0,0118** | ECE do modelo | contra **0,0494** sem calibrar — Brier é erro ao quadrado e não enxerga a ponta fria; ECE enxerga |
+| **4,20×** | lift no top 200 | **85** dos 200 compraram, contra 20 ao acaso |
 | **36** | vendedores na fila | por `vendedor_id`; por nome dá 35, e some uma pessoa |
 
 Duas armadilhas escondidas nesses números:

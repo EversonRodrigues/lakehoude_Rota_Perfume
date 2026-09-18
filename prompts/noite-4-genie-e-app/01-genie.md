@@ -31,8 +31,8 @@ existe:**
 
 > **Números medidos antes da calibragem do modelo.** A revisão pós-deploy
 > ([noite 3, prompt 4](../noite-3-machine-learning/04-revisao-do-modelo.md))
-> calibrou o score e eles mudaram: lift **4,44×**, **90** de 200, receita
-> esperada **R$ 388.987,57**. O texto abaixo é o da noite, e fica como está.
+> calibrou o score e eles mudaram: lift **4,20×**, **85** de 200, receita
+> esperada **R$ 352.868,13**. O texto abaixo é o da noite, e fica como está.
 | `gold.dim_cliente` | achar pela razão social o cliente que não está na fila |
 
 O que **não** existe ainda: `gold.retorno_ligacao` e o segundo Genie space.

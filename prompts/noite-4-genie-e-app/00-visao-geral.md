@@ -93,16 +93,16 @@ Todos medidos no workspace `<HOST_DO_WORKSPACE>` (profile `<PERFIL>`, catálogo
 |---|---|
 | Tarefas no job | **13** no começo da noite, **15** no fim |
 | Contatos na fila | **200**, em **36** vendedores |
-| Receita esperada da fila | **R$ 388.987,57** (soma de `score × ticket_medio`) |
-| Conversão prevista | **45%** — 90 dos 200 — contra **10,1%** ligando às cegas |
-| Ganho do modelo | **4,44×** (`lift_top200`) |
-| Maior score da semana | **0,718** |
+| Receita esperada da fila | **R$ 352.868,13** (soma de `score × ticket_medio`) |
+| Conversão prevista | **42,5%** — 85 dos 200 — contra **10,1%** ligando às cegas |
+| Ganho do modelo | **4,20×** (`lift_top200`) |
+| Maior score da semana | **0,613** |
 
 > Os números desta tabela são os de **depois da calibragem do modelo**, feita
 > na revisão pós-deploy — ver
 > [noite 3, prompt 4](../noite-3-machine-learning/04-revisao-do-modelo.md).
 > Na noite, ao vivo, a receita esperada lia **R$ 556.423,71** e o lift **4,15×**:
-> o score não era calibrado e a estimativa saía ~30% por cima.
+> o score não era calibrado e a estimativa saía ~37% por cima.
 | Retornos registrados no começo da noite | **0** — e é assim que tem que ser |
 | Colunas da gold sem COMMENT | **65** antes do prompt 1, **0** depois |
 | Receita que sobrevive a toda camada | **R$ 102.303.828,05** |
